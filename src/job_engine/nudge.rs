@@ -474,17 +474,18 @@ pub fn loop_nudge_prompt_for_engine(input: LoopNudgePromptInput<'_>, engine: Eng
         e
     };
 
-    // Both engines can discover the canonical skill from natural-language context. Claude's
-    // inline reference keeps its familiar slash-prefixed name; Codex receives the generic name
-    // because it has no Claude slash-command surface. If installation failed, neither engine is
-    // pointed at a procedure it cannot load; the compact inline fallback remains executable.
+    // Each engine can discover the canonical skill from natural-language context. Claude's
+    // inline reference keeps its familiar slash-prefixed name; non-Claude engines receive the
+    // generic name because they have no Claude slash-command surface. If installation failed,
+    // no engine is pointed at a procedure it cannot load; the compact inline fallback remains
+    // executable.
     let trigger = match (engine, skill_available) {
         (Engine::Claude, true) => format!(
             "Continue the goal per your /{WORKER_SKILL_NAME} skill — re-read it now if it isn't \
              in context; it holds your full loop protocol and the machine-report (WakeReport) \
              schema. Do whatever needs attention right now."
         ),
-        (Engine::Codex, true) => {
+        (Engine::Codex | Engine::Trae, true) => {
             "Continue the goal per your `agent-manager-worker` skill — re-read it now if it isn't \
              in context; it holds your full loop protocol and the machine-report (WakeReport) \
              schema. Do whatever needs attention right now."

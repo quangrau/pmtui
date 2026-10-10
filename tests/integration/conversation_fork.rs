@@ -189,6 +189,7 @@ fn assert_child_published(rig: &ForkRig, source_before: &agent_manager::registry
             assert!(args.contains("--fork-session"), "{args}");
         }
         Engine::Codex => assert!(args.contains(&format!("fork {SOURCE_ID}")), "{args}"),
+        Engine::Trae => panic!("conversation fork fixture does not support TRAE yet"),
     }
 }
 
@@ -392,6 +393,7 @@ fn install_stub(fx: &EnterFixture, engine: Engine, launches: &Path, source: Sour
                 child = child_rollout.display(),
             )
         }
+        Engine::Trae => panic!("conversation fork fixture does not support TRAE yet"),
     };
     std::fs::write(&bin, script).unwrap();
     use std::os::unix::fs::PermissionsExt;

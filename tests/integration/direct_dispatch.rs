@@ -66,10 +66,12 @@ done
     let socket = TmuxSocket::new(match engine {
         Engine::Claude => "am-direct-claude",
         Engine::Codex => "am-direct-codex",
+        Engine::Trae => "am-direct-trae",
     });
     let host_socket = TmuxSocket::new(match engine {
         Engine::Claude => "am-direct-host-claude",
         Engine::Codex => "am-direct-host-codex",
+        Engine::Trae => "am-direct-host-trae",
     });
     let host = format!("direct-host-{}-{}", engine.label(), std::process::id());
     let driver = TmuxDriver::with_socket(socket.name());
@@ -112,6 +114,7 @@ done
                     && wait_for_pane_text(&host_driver, &host, "< codex >")
                     && send_key(host_socket.name(), &host, "BTab")
             }
+            Engine::Trae => false,
         };
     let message = format!("DIRECT_{}_OK", engine.label().to_ascii_uppercase());
     let submitted = selected

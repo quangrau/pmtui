@@ -59,19 +59,24 @@ pub enum Mode {
 pub enum Engine {
     Claude,
     Codex,
+    Trae,
 }
 
 impl Engine {
     /// Every engine, in a STABLE order — the one source the create-form toggle, the decider
     /// picker overlay, and the picker cursor all index into, so they cannot disagree about
     /// which engines exist or in what order.
-    pub const ALL: [Engine; 2] = [Engine::Claude, Engine::Codex];
+    pub const ALL: [Engine; 3] = [Engine::Claude, Engine::Codex, Engine::Trae];
+    /// Engines with a tested supervisor/decider contract. TRAE is excluded until its hook and
+    /// structured consult behavior are proven.
+    pub const DECIDERS: [Engine; 2] = [Engine::Claude, Engine::Codex];
 
     /// The binary name to launch.
     pub fn bin(self) -> &'static str {
         match self {
             Engine::Claude => "claude",
             Engine::Codex => "codex",
+            Engine::Trae => "traecli",
         }
     }
     pub fn label(self) -> &'static str {

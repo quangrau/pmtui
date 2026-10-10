@@ -718,6 +718,10 @@ fn loop_nudge_prompt_invokes_the_worker_skill_in_the_engines_native_form() {
     assert!(!codex.contains("/agent-manager-worker"));
     assert!(codex.contains("`agent-manager-worker` skill"));
 
+    let trae = loop_nudge_prompt_for_engine(input(true), Engine::Trae);
+    assert!(!trae.contains("/agent-manager-worker"));
+    assert!(trae.contains("`agent-manager-worker` skill"));
+
     let claude_without_skill = loop_nudge_prompt_for_engine(input(false), Engine::Claude);
     assert!(!claude_without_skill.contains("/agent-manager-worker"));
     assert!(claude_without_skill.contains("follow the inline fallback below"));
@@ -1338,13 +1342,13 @@ fn no_nudge_asks_codex_to_declare_its_own_conversation_id() {
     // as a FACT and pmd ignores a worker-authored one, so the instruction would be asking an agent
     // for something discarded on arrival — a prompt disagreeing with the policy behind it.
     //
-    // Checked on BOTH paths and BOTH engines, because the ask only ever appeared on one of the four
+    // Checked on both paths and every engine, because the ask only ever appeared on one branch
     // and a revival would be easy to miss.
     let marker = std::path::Path::new("/tmp/proj/.project-state/sessions/s/needs-you.json");
     let since = SinceLastWake::default();
     let input =
         |available| LoopNudgePromptInput::new("goal", "", "", "", &since, available, marker);
-    for engine in [Engine::Codex, Engine::Claude] {
+    for engine in [Engine::Codex, Engine::Claude, Engine::Trae] {
         for skill_available in [false, true] {
             let prompt = loop_nudge_prompt_for_engine(input(skill_available), engine);
             assert!(
