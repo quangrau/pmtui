@@ -186,9 +186,11 @@ pub(super) const DIALOG_MAX_QUESTION_GAP: usize = 4;
 ///
 /// PHRASE-ANCHORED EXCEPTIONS run afterwards, only on a window these rules have
 /// already declined: codex's **startup trust dialog**
-/// ([`classify_codex_trust_dialog`]) and Claude's workspace trust dialog
-/// ([`classify_claude_trust_dialog`]). Two clauses above reject the codex trust dialog — its `?`
-/// sits mid-line in a wrapped paragraph, and its footer is `Press enter to continue`, not
+/// ([`classify_codex_trust_dialog`]), Claude's workspace trust dialog
+/// ([`classify_claude_trust_dialog`]), and TraeX's hook trust and sign-in prompts
+/// ([`classify_trae_hook_trust_dialog`], [`classify_trae_signin_dialog`]). Two clauses above
+/// reject the codex trust dialog — its `?` sits mid-line in a wrapped paragraph, and its footer is
+/// `Press enter to continue`, not
 /// `Esc to cancel` — and neither clause is widened to let it in, because "a mid-line
 /// `?` plus a bare press-enter footer" describes a large amount of ordinary prose and
 /// a false dialog escalates a session that is working fine. The exception matches that
@@ -251,7 +253,10 @@ pub fn classify_dialog(capture: &str) -> Option<PaneDialog> {
             });
         }
     }
-    classify_codex_trust_dialog(window).or_else(|| classify_claude_trust_dialog(window))
+    classify_codex_trust_dialog(window)
+        .or_else(|| classify_claude_trust_dialog(window))
+        .or_else(|| classify_trae_hook_trust_dialog(window))
+        .or_else(|| classify_trae_signin_dialog(window))
 }
 
 /// Content anchors that identify authority-changing prompts even if a future CLI
@@ -363,6 +368,8 @@ fn dialog_block_boundary(line: &str) -> bool {
     trimmed.is_empty()
         || lower.contains("esc to cancel")
         || lower.starts_with("press enter to")
+        // TraeX's footer, drawn with no blank row after the last option.
+        || lower.starts_with("enter confirm")
         || trimmed
             .chars()
             .all(|c| matches!(c, '─' | '━' | '═' | '-' | ' '))
@@ -393,6 +400,8 @@ pub(super) const CODEX_TRUST_QUESTION: &str = "do you trust the contents of this
 const CODEX_TRUST_FOLDER_QUESTION: &str = "trust this folder?";
 const CLAUDE_TRUST_QUESTION: &str =
     "quick safety check: is this a project you created or one you trust?";
+const TRAE_HOOK_TRUST_HEADING: &str = "hooks need review";
+const TRAE_SIGNIN_HEADING: &str = "sign in to use trae cli";
 
 /// Recognise codex's startup trust dialog on a window whose general rules
 /// ([`classify_dialog`]) already found nothing.
@@ -550,6 +559,67 @@ fn collect_claude_trust_options(lines: &[&str], offset: usize) -> CollectedOptio
         checkbox_count: 0,
         submit_control: false,
     }
+}
+
+/// Recognise TraeX's hook trust prompt on a window the general rules declined.
+///
+/// The prompt has no `?`, and its footer is not `Esc to cancel`. Trusting hooks lets them run
+/// outside the sandbox, so this only recognizes and escalates it; it never answers it.
+fn classify_trae_hook_trust_dialog(window: &[&str]) -> Option<PaneDialog> {
+    classify_trae_anchored_dialog(window, TRAE_HOOK_TRUST_HEADING, |lines| {
+        lines.iter().map(|line| (*line).to_string()).collect()
+    })
+}
+
+/// Recognise TraeX's sign-in chooser on a window the general rules declined.
+///
+/// TraeX marks the selected choice with plain ASCII `>`. Normalize that marker only for this
+/// anchored dialog, so quoted `> 1. step` transcript text does not become a dialog option.
+fn classify_trae_signin_dialog(window: &[&str]) -> Option<PaneDialog> {
+    classify_trae_anchored_dialog(window, TRAE_SIGNIN_HEADING, |lines| {
+        lines
+            .iter()
+            .map(|line| {
+                let rest = line.trim_start();
+                match rest.strip_prefix('>') {
+                    Some(after) if dialog_option_text(after).is_some() => format!("❯{after}"),
+                    _ => (*line).to_string(),
+                }
+            })
+            .collect()
+    })
+}
+
+fn classify_trae_anchored_dialog<F>(
+    window: &[&str],
+    heading: &str,
+    normalise: F,
+) -> Option<PaneDialog>
+where
+    F: Fn(&[&str]) -> Vec<String>,
+{
+    let normalised = normalise(window);
+    let normalised: Vec<&str> = normalised.iter().map(String::as_str).collect();
+    for q in (0..normalised.len()).rev() {
+        let trimmed = normalised[q].trim();
+        if !trimmed.eq_ignore_ascii_case(heading) {
+            continue;
+        }
+        let collected = collect_dialog_options(&normalised, q);
+        if collected.options.len() < DIALOG_MIN_OPTIONS {
+            continue;
+        }
+        return Some(PaneDialog {
+            question: trimmed.to_string(),
+            options: collected.options,
+            selected_index: collected.selected_index,
+            mode: PaneDialogMode::Single,
+            checked_indices: Vec::new(),
+            class: PaneDialogClass::HumanOnly,
+            context_hash: dialog_context_hash(&normalised, q, collected.start),
+        });
+    }
+    None
 }
 
 fn dialog_context_hash(window: &[&str], question: usize, options_start: usize) -> u64 {
