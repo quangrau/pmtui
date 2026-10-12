@@ -13,6 +13,13 @@ const IDLE_CLAUDE_PLACEHOLDER_PANE: &str = concat!(
     "\x1b[39m  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n",
 );
 
+const IDLE_TRAE_PANE: &str = concat!(
+    "────────────────────────────────\n",
+    "❯ Ask TRAE CLI to do anything\n",
+    "────────────────────────────────\n",
+    "? for shortcuts\n",
+);
+
 /// The same box holding a person's unsent draft: plain text, not dim.
 const CLAUDE_DRAFT_PANE: &str = concat!(
     "\x1b[38;5;244m────────────────────────────────\n",
@@ -52,6 +59,20 @@ fn s_sends_the_typed_text_to_the_rows_own_pane_and_nothing_else() {
         "the text did not reach exactly the selected row's pane"
     );
     assert!(matches!(app.mode, UiMode::Normal), "the field stayed open");
+    assert_eq!(app.status, "sent \u{2192} bot");
+}
+
+#[test]
+fn s_sends_to_a_trae_pane_waiting_at_its_placeholder_composer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, pane, session, _) = send_app(dir.path(), IDLE_TRAE_PANE);
+    send_via_keys(&mut app, "check the traex prompt");
+
+    assert_eq!(
+        pane.sends(),
+        vec![(session, "check the traex prompt".to_string())],
+        "TraeX's non-bare placeholder prompt must be accepted as a composer"
+    );
     assert_eq!(app.status, "sent \u{2192} bot");
 }
 

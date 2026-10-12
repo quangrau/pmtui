@@ -471,6 +471,27 @@ fn claude_workspace_trust_dialog_is_human_only() {
 }
 
 #[test]
+fn trae_signin_dialog_is_human_only_even_with_a_visible_composer() {
+    let d = classify_dialog(FIXTURE_TRAE_SIGNIN).expect("TraeX sign-in dialog recognised");
+    assert_eq!(d.question, "Sign in to use TRAE CLI");
+    assert_eq!(
+        d.options,
+        vec![
+            "ByteDance Employee Sign in with Codebase Git or ByteDance SSO".to_string(),
+            "Enterprise User Sign in with email, a custom domain, or a PAT".to_string()
+        ]
+    );
+    assert_eq!(d.selected_index, Some(0));
+    assert_eq!(d.mode, PaneDialogMode::Single);
+    assert_eq!(d.class, PaneDialogClass::HumanOnly);
+    assert_eq!(
+        classify_pane(FIXTURE_TRAE_SIGNIN),
+        PaneActivity::Busy,
+        "sign-in blocks text input even though the composer is visible above it"
+    );
+}
+
+#[test]
 fn claude_trust_anchors_scattered_over_a_transcript_are_not_the_dialog() {
     let scattered = concat!(
         "⏺ The dialog asks: Is this a project you created or one you trust?\n",
