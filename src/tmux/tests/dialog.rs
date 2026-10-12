@@ -447,6 +447,30 @@ fn codex_trust_dialog_yields_the_question_and_both_options() {
 }
 
 #[test]
+fn claude_workspace_trust_dialog_is_human_only() {
+    let d = classify_dialog(FIXTURE_CLAUDE_DIALOG_TRUST).expect("Claude trust dialog recognised");
+    assert_eq!(
+        d.question,
+        "Quick safety check: Is this a project you created or one you trust?"
+    );
+    assert_eq!(
+        d.options,
+        vec![
+            "No, exit".to_string(),
+            "Yes, I trust this folder".to_string()
+        ]
+    );
+    assert_eq!(d.selected_index, Some(0));
+    assert_eq!(d.mode, PaneDialogMode::Single);
+    assert_eq!(d.class, PaneDialogClass::HumanOnly);
+    assert_eq!(
+        classify_pane(FIXTURE_CLAUDE_DIALOG_TRUST),
+        PaneActivity::Busy,
+        "trust is a blocking dialog, not an idle composer"
+    );
+}
+
+#[test]
 fn current_codex_folder_access_dialog_is_human_only() {
     let pane = r#"
   Folder access
