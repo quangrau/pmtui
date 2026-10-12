@@ -616,7 +616,7 @@ fn run_headless(
             let _ = std::fs::remove_file(&last);
             Ok((verdict, code))
         }
-        Engine::Trae => Err("TRAE is not a decider-bench engine yet".into()),
+        Engine::Trae => Err("TRAE decider benchmark is not implemented".into()),
     }
 }
 

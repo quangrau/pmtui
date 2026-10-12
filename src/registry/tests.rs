@@ -35,9 +35,10 @@ fn round_trips() {
 #[test]
 fn engine_labels() {
     assert_eq!(Engine::ALL, [Engine::Claude, Engine::Codex, Engine::Trae]);
+    assert_eq!(Engine::Trae.bin(), "traex");
     assert_eq!(Engine::Claude.label(), "claude");
     assert_eq!(Engine::Codex.label(), "codex");
-    assert_eq!(Engine::Trae.label(), "traecli");
+    assert_eq!(Engine::Trae.label(), "traex");
     assert_eq!(
         serde_json::from_str::<Engine>(r#""trae""#).unwrap(),
         Engine::Trae
