@@ -376,6 +376,7 @@ const FIXTURE_CLAUDE_DIALOG_TRUST: &str = concat!(
     "\n",
     " Enter to confirm · Esc to cancel\n",
 );
+
 /// Live Claude Code v2.1.296 captures taken WITH styles (`capture-pane -e`), trimmed to the
 /// input box and the row around it. Rules shortened. The box is the same in every state; only
 /// its contents and their style differ, which is what the send gate reads.

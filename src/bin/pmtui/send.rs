@@ -177,7 +177,7 @@ pub(crate) fn send_decision(t: &SendTarget, p: &SendProbe) -> SendPlan {
 ///
 /// Shared by [`send_decision`] and `App::deliver`'s final recheck, so the press and the write
 /// can never disagree about what is safe. In order: a dialog (the `Enter` would answer it), the
-/// feedback survey drawn by the input box (its digit keys would answer it), no prompt at all, and a person's unsent draft in
+/// blocking state drawn around the input box, no prompt at all, and a person's unsent draft in
 /// the box (our text would be glued onto theirs and submitted). The dialog check precedes the
 /// prompt check so its clearer reason wins; `has_composer_in_tail` refuses a dialog anyway.
 pub(crate) fn pane_refusal(styled: &str) -> Option<&'static str> {
@@ -185,8 +185,14 @@ pub(crate) fn pane_refusal(styled: &str) -> Option<&'static str> {
     if tmux::classify_dialog(&cap).is_some() {
         return Some("dialog up — press Enter and answer it there");
     }
-    if tmux::feedback_survey(&cap) {
-        return Some("the agent is asking for feedback — press Enter and answer it there");
+    match tmux::send_blocker(&cap) {
+        Some(tmux::SendBlocker::Survey) => {
+            return Some("the agent is asking for feedback — press Enter and answer it there");
+        }
+        Some(tmux::SendBlocker::UsageLimit) => {
+            return Some("usage limit reached — send it after the limit resets");
+        }
+        None => {}
     }
     if !tmux::has_composer_in_tail(&cap, SEND_GATE_LINES) {
         return Some("no prompt on screen — press Enter to look");
