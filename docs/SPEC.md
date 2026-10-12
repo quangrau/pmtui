@@ -496,6 +496,61 @@ phrase that says what the setting controls. The product offers only the values t
 A setting applies first and saves second. The product reports each failure apart from the other, because
 "It does not work" and "It will not continue after a restart" are different facts.
 
+A row of the Settings view answers `Enter` in one of two ways, and the row says which. A row of
+values opens its list. A row that ACTS does the one thing its state leaves to do, in a single
+keypress, and the product names that thing before the person presses it. A list of one option asks a
+question with one answer. The product MUST NOT write an action to the preferences, because a
+remembered action would run again at every start.
+
+### Updates
+
+The Settings view states the version that the dashboard runs. The person asks for a check; the product
+MUST NOT reach the network to draw a frame, because a stall there cannot be told from a dashboard that
+has stopped.
+
+The installer answers the question. The product asks it for the newest release and for the version that
+it last installed, and the product performs an update by running the installer. The product MUST NOT
+resolve a release on its own, because a second answer to "what is newest?" can disagree with the one
+that installs.
+
+- The product keeps four answers apart: "there is nothing newer", "nothing is published", "the
+  question could not be asked", and "the installer cannot be asked". To report the third as the
+  first tells a person that they are current while their network is down; to report the fourth as
+  the third sends a person with a working network to go and debug their network.
+- An installer too old to answer is judged on the ANSWER, not on its words: one that answers states
+  both the version it installed and the newest one, so an installer that states neither did not
+  understand the question.
+- AN INSTALLER KEEPS ITS OWN COPY CURRENT. An update MUST refresh the stored installer before it
+  decides whether anything else needs updating, because that decision can stop the update — which
+  left machines updating their programs for months while the script that installs them stayed as
+  first installed, until it could no longer answer at all. A refresh that fails leaves the working
+  installer in place, and a download that is not the installer is never stored.
+- An installer too old to answer CANNOT repair itself, so the product does not ask it to: the way
+  out is to obtain a current installer and run that one. The product obtains it from the repository
+  the installed one names, so a fork is not silently repointed; it MUST verify that what arrived is
+  the installer before running it, because a refused request and a truncated download are both a
+  reply; and the person watches it happen in their terminal, because a product that fetched and ran
+  a program without showing it would be asking for trust it has not earned.
+- The product compares versions by number. A version that it cannot compare is a fact, never a verdict,
+  and the product still offers the update, because the installer decides and declines on its own.
+- The product names the version that the installer last installed WHEN that version disagrees with the
+  one running. That disagreement is why an update appears to do nothing on a machine whose binaries
+  point at a local build.
+- A build that no installer placed MUST say so, and MUST NOT report a check that failed.
+- The installer takes the terminal for an update, as an editor does.
+- A REPLACED BINARY IS NO USE TO A LOADED PROCESS. After an update the dashboard restarts itself on
+  the new build, keeping the registry and socket it was given. A restart MUST NOT disturb a project
+  terminal: those belong to tmux, not to the dashboard.
+- EVERY DRIVER restarts too, and each one does it for itself. One driver owns one terminal socket,
+  so a machine may run several and no dashboard has authority over another pair's driver. A driver
+  therefore watches its own program and becomes the new one when it is replaced, which covers the
+  drivers this dashboard never started. It restarts BETWEEN sweeps, never while it holds the input
+  lock, and a driver that cannot become the new program keeps driving on the old one — the sessions
+  it supervises matter more than the build it runs. A program it cannot read is not a new program,
+  because restarting on an unreadable file would be a restart loop.
+- When the product cannot restart itself it says the update LANDED and asks the person to reopen it,
+  because reporting a failure would send them to look for a problem with the install.
+
 The preferences belong to the person. They sit beside the registry, so a scratch registry MUST NOT write
 over the preferences of the person. The product gives each field a default, so a file from another version
 still loads. The product reports a file that it cannot read, and MUST NOT replace it without a message.

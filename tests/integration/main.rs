@@ -25,6 +25,9 @@ mod keystrokes;
 mod nonblocking_checkpoint;
 mod nudge_judge;
 mod pane_reading;
+#[cfg(target_os = "linux")]
+mod pdeathsig;
+mod pmd_refresh;
 mod pmtui_fixture;
 mod preview_scroll;
 mod probe;
@@ -33,6 +36,7 @@ mod send_keys;
 mod send_message;
 mod session_switcher;
 mod settings_theme;
+mod settings_update;
 mod single_instance;
 mod spawn;
 mod stubs;
