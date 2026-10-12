@@ -76,7 +76,7 @@ impl Engine {
         match self {
             Engine::Claude => "claude",
             Engine::Codex => "codex",
-            Engine::Trae => "traecli",
+            Engine::Trae => "traex",
         }
     }
     pub fn label(self) -> &'static str {

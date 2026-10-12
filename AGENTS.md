@@ -242,8 +242,9 @@ pmtui spawn --cancel --request-id ID      # ask once; asking twice is asking onc
 ```
 
 `--cancel` names its child through `--request-id`; it takes no value of its own. The agent flag is
-`--agent`, not `--engine`, and accepts `claude`, `codex`, or `traecli`. TRAE supports Standard
-sessions and spawned jobs only; Autopilot remains refused until its hook contract is proven.
+`--agent`, not `--engine`, and accepts `claude`, `codex`, or `traex`. TRAE supports Standard
+sessions, spawned jobs, and Autopilot. Autopilot uses TraeX `hooks.Stop` plus
+`pmtui hook turn-complete`; hook trust remains an engine prompt that a person answers once.
 
 Exit codes are the contract an agent branches on. `--json` still prints a result document on a
 nonzero exit, so read the document rather than trusting the code alone. From `exit_code`:
@@ -314,8 +315,8 @@ empty one, so an empty answer NAMES the file it read rather than blaming the id.
   presenting it; pure, so every awkward state is tested without a network. `src/bin/pmtui/app/
   updates.rs` is the half that runs the installer.
 - `src/bin/pmtui/`: dashboard state, actions, rendering, and terminal handoff.
-- `.agents/skills/`: canonical project-local skills; `.claude/skills/` contains compatibility
-  symlinks only.
+- `.agents/skills/`: shared project-local skills for Codex and TraeX; `.claude/skills/` contains
+  compatibility symlinks only.
 - Tests live beside code; real terminal acceptance lives in `tests/integration/`.
 
 ## Test Placement
