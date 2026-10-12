@@ -233,7 +233,9 @@ pmtui spawn --cancel --request-id ID      # ask once; asking twice is asking onc
 ```
 
 `--cancel` names its child through `--request-id`; it takes no value of its own. The agent flag is
-`--agent`, not `--engine`.
+`--agent`, not `--engine`, and accepts `claude`, `codex`, or `traex`. TRAE supports Standard
+sessions, spawned jobs, and Autopilot. Autopilot uses TraeX `hooks.Stop` plus
+`pmtui hook turn-complete`; hook trust remains an engine prompt that a person answers once.
 
 Exit codes are the contract an agent branches on. `--json` still prints a result document on a
 nonzero exit, so read the document rather than trusting the code alone. From `exit_code`:
@@ -254,7 +256,7 @@ directory, so it works where `$HOME` is read-only.
 
 - `src/job_engine/`: persistent-session scheduling and policy application.
 - `src/tmux/`: terminal driver, exact targeting, input delivery, and names.
-- `src/worker/`: Claude/Codex launch argv and result schemas.
+- `src/worker/`: Claude/Codex/TRAE launch argv and result schemas.
 - `src/advise/`: read-only decider consult and reply validation.
 - `src/daemon/`: registry reconciliation, ownership, escalation, and cleanup.
 - `src/doctor/`: read-only registry, state, executable, skill, and tmux diagnostics.
@@ -270,8 +272,8 @@ directory, so it works where `$HOME` is read-only.
   presenting it; pure, so every awkward state is tested without a network. `src/bin/pmtui/app/
   updates.rs` is the half that runs the installer.
 - `src/bin/pmtui/`: dashboard state, actions, rendering, and terminal handoff.
-- `.agents/skills/`: canonical project-local skills; `.claude/skills/` contains compatibility
-  symlinks only.
+- `.agents/skills/`: shared project-local skills for Codex and TraeX; `.claude/skills/` contains
+  compatibility symlinks only.
 - Tests live beside code; real terminal acceptance lives in `tests/integration/`.
 
 ## Test Placement
