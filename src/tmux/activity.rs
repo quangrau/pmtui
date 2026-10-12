@@ -279,7 +279,7 @@ pub(super) fn is_bare_prompt(line: &str) -> bool {
 /// Clause (2) of [`classify_pane`]. Claude's empty box draws a bare `❯`, so this is a bare prompt
 /// or codex's composer.
 fn is_empty_prompt_row(lines: &[&str], at: usize) -> bool {
-    is_bare_prompt(lines[at]) || is_codex_composer(lines[at]) || is_trae_composer(lines[at])
+    is_bare_prompt(lines[at]) || is_codex_composer(lines[at])
 }
 
 /// Is the row at `at` an input prompt, whatever it holds? The prompt predicate shared by
@@ -287,10 +287,7 @@ fn is_empty_prompt_row(lines: &[&str], at: usize) -> bool {
 /// because claude's prompt is recognised by where it sits, not by what it says.
 pub(super) fn is_prompt_row(lines: &[&str], at: usize) -> bool {
     let line = lines[at];
-    is_bare_prompt(line)
-        || is_codex_composer(line)
-        || is_trae_composer(line)
-        || claude_box(lines, at).is_some()
+    is_bare_prompt(line) || is_codex_composer(line) || claude_box(lines, at).is_some()
 }
 
 /// The index of the last prompt row in `lines`, if any.
@@ -317,9 +314,6 @@ fn last_prompt_row(lines: &[&str]) -> Option<usize> {
 pub(super) fn claude_box(lines: &[&str], at: usize) -> Option<usize> {
     let row = lines[at].trim();
     if !row.starts_with('❯') || dialog_option_text(row).is_some() {
-        return None;
-    }
-    if is_trae_composer(row) {
         return None;
     }
     let above = lines[..at].iter().rev().find(|l| !l.trim().is_empty())?;
@@ -349,11 +343,8 @@ pub(super) fn is_box_rule(line: &str) -> bool {
 
 /// The TOP rule of an input box: a plain [`is_box_rule`], or one with a title set into it —
 /// a run of at least eight `─`, a space, a title of at most [`BOX_TITLE_MAX`] characters with no
-/// `─` in it, a space, and the rule's closing `─` run, as in `──────── Fix the parser ─`. TraeX
-/// labels its box this way with the thread or the turn, on an idle box as well as a working one
-/// (`FIXTURE_TRAE_*`, measured on traex 0.209.1, end with exactly one `─`); requiring a plain rule
-/// read such a pane as having no prompt at all. The narrow shape keeps a markdown separator with
-/// text in it from opening a box.
+/// `─` in it, a space, and the rule's closing `─` run, as in `──────── Fix the parser ─`. The
+/// narrow shape keeps a markdown separator with text in it from opening a box.
 pub(super) fn is_box_top_rule(line: &str) -> bool {
     let rule = line.trim();
     if is_box_rule(rule) {
@@ -421,16 +412,4 @@ pub(super) fn is_codex_composer(line: &str) -> bool {
         Some(_) => dialog_option_text(trimmed).is_none(),
         None => false,
     }
-}
-
-/// TraeX's idle composer line. It uses Claude's `❯` lead, but unlike Claude it is not
-/// bare: a fresh idle pane paints `❯ Ask TRAE CLI to do anything`.
-///
-/// Keep this phrase-anchored rather than accepting any non-bare `❯` line. Claude echoes
-/// submitted user messages with the same lead, and treating those transcript rows as
-/// composers would turn old scrollback into a false Idle.
-fn is_trae_composer(line: &str) -> bool {
-    line.trim()
-        .strip_prefix('❯')
-        .is_some_and(|rest| rest.trim() == "Ask TRAE CLI to do anything")
 }
