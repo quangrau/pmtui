@@ -43,7 +43,7 @@ fn the_idle_gate_confirms_only_a_byte_stable_transcript() {
 fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
     for hook in [None, Some(false), Some(true)] {
         assert_eq!(
-            merge_activity(Some(Engine::Claude), hook, ActivityObservation::Missing),
+            merge_activity(true, Some(Engine::Claude), hook, ActivityObservation::Missing),
             Some(false),
             "no live pane is idle regardless of stale hook state"
         );
@@ -53,7 +53,7 @@ fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
             ActivityObservation::IdleUnconfirmed,
         ] {
             assert_eq!(
-                merge_activity(Some(Engine::Claude), hook, active),
+                merge_activity(true, Some(Engine::Claude), hook, active),
                 Some(true),
                 "a live pane without confirmed idleness stays working: {hook:?} {active:?}"
             );
@@ -61,6 +61,7 @@ fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
     }
     assert_eq!(
         merge_activity(
+            true,
             Some(Engine::Claude),
             Some(true),
             ActivityObservation::IdleConfirmed
@@ -70,6 +71,17 @@ fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
     );
     assert_eq!(
         merge_activity(
+            false,
+            Some(Engine::Claude),
+            Some(true),
+            ActivityObservation::IdleConfirmed
+        ),
+        Some(false),
+        "an undriven row's stale hook cannot outrank a confirmed idle pane"
+    );
+    assert_eq!(
+        merge_activity(
+            true,
             Some(Engine::Claude),
             Some(false),
             ActivityObservation::IdleConfirmed
@@ -79,6 +91,7 @@ fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
     );
     assert_eq!(
         merge_activity(
+            true,
             Some(Engine::Claude),
             None,
             ActivityObservation::IdleConfirmed
@@ -88,6 +101,7 @@ fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
     );
     assert_eq!(
         merge_activity(
+            true,
             Some(Engine::Codex),
             Some(true),
             ActivityObservation::IdleConfirmed
