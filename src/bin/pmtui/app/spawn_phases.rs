@@ -18,7 +18,7 @@ use agent_manager::spawn::{
 use agent_manager::tmux::LaunchOutcome;
 use agent_manager::worktree;
 
-use super::create::{NewSession, fresh_standard_argv, reserve_new_session};
+use super::create::{NewSession, fresh_standard_argv_with_pmtui_bin, reserve_new_session};
 use super::spawning::{
     ChildTerminal, PlanRefusal, READINESS_AFTER_FIRST_MS, READINESS_CAPTURE_LINES,
     READINESS_GAP_MS, READINESS_WINDOW_MS, SpawnChild, SpawnJob, SpawnPhase, job_worktree,
@@ -171,7 +171,7 @@ impl App {
                 );
             }
         };
-        let plan = match plan_child(&reg, &job.request) {
+        let plan = match plan_child(&reg, &job.request, self.pmtui_bin.as_deref()) {
             Ok(plan) => plan,
             Err(PlanRefusal::Refused(refusal)) => {
                 return self.fail(job, refusal.code, refusal.message);
@@ -479,15 +479,16 @@ impl App {
             self.launch_job_step(&row, &paths, engine, &session, &conversation)
         } else {
             // A CHAT child, as v1 staged: the persistent interactive agent a human talks to.
-            let argv = fresh_standard_argv(
+            let env = self.managed_env(&row.id, &row.root);
+            let argv = fresh_standard_argv_with_pmtui_bin(
                 engine,
                 &conversation,
                 row.worker_model.as_deref(),
                 &paths.turn_signal(),
                 row.initial_prompt.as_deref(),
+                env.pmtui_bin.as_deref(),
             );
-            let env = self.managed_env(&row.id, &row.root);
-            crate::session::install_spawn_skill(&row.root, engine, &env);
+            crate::session::install_prelaunch_skills(&row.root, engine, &env);
             self.agent_tmux
                 .launch_interactive(&session, &row.root, &argv, &env)
         };

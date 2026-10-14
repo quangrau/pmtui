@@ -33,6 +33,7 @@ impl App {
         self.mode = UiMode::Sending {
             target: SendTarget {
                 id,
+                engine: e.engine,
                 root: e.root.clone(),
                 session,
                 agent_loop: true,

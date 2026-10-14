@@ -30,12 +30,14 @@ pub mod fake;
 mod tests;
 
 pub use activity::{
-    PaneActivity, classify_pane, has_composer, has_composer_in_tail, progress_fingerprint,
+    PaneActivity, classify_pane, classify_pane_for_engine, has_composer, has_composer_for_engine,
+    has_composer_in_tail, has_composer_in_tail_for_engine, progress_fingerprint,
+    progress_fingerprint_for_engine,
 };
 // The heartbeat confirmation gate's content-stability helper. `pub` (not `pub(crate)`)
 // because pmtui — a SEPARATE crate from this lib — runs the same two-observation gate
 // read-only in its refresh to tell a working Standard agent from one idle at its prompt.
-pub use activity::idle_fingerprint;
+pub use activity::{idle_fingerprint, idle_fingerprint_for_engine};
 pub use dialog::{
     PaneDialog, PaneDialogClass, PaneDialogMode, classify_dialog, dialog_option_is_concrete,
 };
@@ -49,7 +51,8 @@ pub use real::{LAUNCH_COMMAND_MAX_BYTES, TmuxDriver, launch_command, shell_comma
 // root with a shell metacharacter can't malform the hook command.
 pub(crate) use real::shq;
 pub use send_gate::{
-    classify_pane_styled, claude_draft_in_box, feedback_survey, styled_activity, unstyled,
+    classify_pane_styled, classify_pane_styled_for_engine, claude_draft_in_box, feedback_survey,
+    styled_activity, styled_activity_for_engine, unstyled,
 };
 pub use send_text::sanitize_send_text;
 pub use session_names::{job_session_name, session_name, supervisor_session_name};

@@ -13,6 +13,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::registry::Engine;
+
 use super::activity::{
     PaneActivity, classify_with, claude_box, is_box_top_rule, is_prompt_row, is_spinner_glyph,
 };
@@ -93,7 +95,18 @@ fn is_transcript_entry(line: &str) -> bool {
 /// accepts a box whatever it holds, so a dialog drawn inside a box must never reach the draft
 /// check as a prompt.
 pub fn classify_pane_styled(styled: &str) -> PaneActivity {
+    classify_pane_styled_for_engine(styled, Engine::Claude)
+}
+
+/// [`classify_pane_styled`] when the row engine is known.
+///
+/// TraeX's empty-field test is word-based, not style-based. Claude keeps the styled draft guard
+/// because its placeholder and a human draft can have the same text shape.
+pub fn classify_pane_styled_for_engine(styled: &str, engine: Engine) -> PaneActivity {
     let plain = unstyled(styled);
+    if engine == Engine::Trae {
+        return super::activity::classify_pane_for_engine(&plain, engine);
+    }
     if super::dialog::classify_dialog(&plain).is_some() {
         return PaneActivity::Busy;
     }
@@ -109,9 +122,20 @@ pub fn classify_pane_styled(styled: &str) -> PaneActivity {
 /// text rebuilt from a styled capture need not match it byte for byte. A capture that fails is
 /// Busy.
 pub fn styled_activity(driver: &dyn super::Driver, session: &str, lines: usize) -> PaneActivity {
+    styled_activity_for_engine(driver, session, lines, Engine::Claude)
+}
+
+pub fn styled_activity_for_engine(
+    driver: &dyn super::Driver,
+    session: &str,
+    lines: usize,
+    engine: Engine,
+) -> PaneActivity {
     driver
         .capture_tail_styled(session, lines)
-        .map_or(PaneActivity::Busy, |styled| classify_pane_styled(&styled))
+        .map_or(PaneActivity::Busy, |styled| {
+            classify_pane_styled_for_engine(&styled, engine)
+        })
 }
 
 /// Whether Claude's input box holds unsent text, read from a STYLED capture.

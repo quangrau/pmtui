@@ -398,7 +398,7 @@ impl JobScheduler {
                     return Ok(tick);
                 }
                 let session = self.loop_session();
-                match tmux::styled_activity(driver, &session, 40) {
+                match tmux::styled_activity_for_engine(driver, &session, 40, self.engine) {
                     PaneActivity::Idle => {
                         // The resume path: a human answer just landed (it rides in
                         // `pending_context`), so flag it for the "Since last wake" block. Not a

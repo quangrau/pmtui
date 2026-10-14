@@ -208,16 +208,27 @@ pub fn build_supervisor_command_codex(
     timeout_s: u64,
     kill_grace_s: u64,
 ) -> Vec<String> {
-    build_exec_supervisor_command(ExecSupervisorSpec {
-        engine: Engine::Codex,
-        model,
-        system_prompt,
-        prompt,
-        last_message_path,
-        timeout_s,
-        kill_grace_s,
-        extra_flags: &[],
-    })
+    let mut argv: Vec<String> = vec![
+        "timeout".into(),
+        "-k".into(),
+        kill_grace_s.to_string(),
+        timeout_s.to_string(),
+        Engine::Codex.bin().into(),
+        "exec".into(),
+        "-s".into(),
+        "read-only".into(),
+        "--skip-git-repo-check".into(),
+        "--output-last-message".into(),
+        last_message_path.to_string(),
+    ];
+    if let Some(model) = model {
+        argv.push("-m".into());
+        argv.push(model.to_string());
+    }
+    // Codex has no system-prompt flag, so keep instructions ahead of worker-derived data.
+    argv.push("--".into());
+    argv.push(format!("{system_prompt}\n\n{prompt}"));
+    argv
 }
 
 /// Keep TRAE consults ephemeral because they must not create resumable worker threads.
@@ -229,51 +240,27 @@ pub fn build_supervisor_command_trae(
     timeout_s: u64,
     kill_grace_s: u64,
 ) -> Vec<String> {
-    build_exec_supervisor_command(ExecSupervisorSpec {
-        engine: Engine::Trae,
-        model,
-        system_prompt,
-        prompt,
-        last_message_path,
-        timeout_s,
-        kill_grace_s,
-        extra_flags: &["--ephemeral"],
-    })
-}
-
-struct ExecSupervisorSpec<'a> {
-    engine: Engine,
-    model: Option<&'a str>,
-    system_prompt: &'a str,
-    prompt: &'a str,
-    last_message_path: &'a str,
-    timeout_s: u64,
-    kill_grace_s: u64,
-    extra_flags: &'a [&'a str],
-}
-
-fn build_exec_supervisor_command(spec: ExecSupervisorSpec<'_>) -> Vec<String> {
     let mut argv: Vec<String> = vec![
         "timeout".into(),
         "-k".into(),
-        spec.kill_grace_s.to_string(),
-        spec.timeout_s.to_string(),
-        spec.engine.bin().into(),
+        kill_grace_s.to_string(),
+        timeout_s.to_string(),
+        Engine::Trae.bin().into(),
         "exec".into(),
         "-s".into(),
         "read-only".into(),
         "--skip-git-repo-check".into(),
         "--output-last-message".into(),
-        spec.last_message_path.to_string(),
+        last_message_path.to_string(),
     ];
-    argv.extend(spec.extra_flags.iter().map(|flag| (*flag).to_string()));
-    if let Some(model) = spec.model {
+    argv.push("--ephemeral".into());
+    if let Some(model) = model {
         argv.push("-m".into());
         argv.push(model.to_string());
     }
-    // These CLIs have no system-prompt flag, so keep instructions ahead of worker-derived data.
+    // TraeX has no system-prompt flag, so keep instructions ahead of worker-derived data.
     argv.push("--".into());
-    argv.push(format!("{}\n\n{}", spec.system_prompt, spec.prompt));
+    argv.push(format!("{system_prompt}\n\n{prompt}"));
     argv
 }
 

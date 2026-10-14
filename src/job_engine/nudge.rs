@@ -190,7 +190,7 @@ impl JobScheduler {
         // this sender waits for the lock, which is the race the recheck above is also for.
         match driver.capture_tail(&session, 40) {
             Ok(_)
-                if crate::tmux::styled_activity(driver, &session, 40)
+                if crate::tmux::styled_activity_for_engine(driver, &session, 40, self.engine)
                     == crate::tmux::PaneActivity::Idle => {}
             Ok(capture) => return self.busy_pane_recheck(now, base, &capture),
             Err(_) => return self.busy_recheck(now, base, HoldReason::Transient),
