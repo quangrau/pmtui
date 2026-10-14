@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 
+use crate::registry::Engine;
 use crate::tmux::codex::{
     process_parent_and_start_time, process_path_gone,
     session_id_from_proc as codex_session_id_from_proc,
@@ -1108,6 +1109,25 @@ fn a_codex_submit_retry_never_presses_enter_on_a_dialog_or_a_pane_without_a_prom
             .count();
         assert_eq!(enters, 1, "{session}: a retry Enter was sent\n{calls}");
     }
+}
+
+#[test]
+fn non_codex_sends_do_not_retry_from_quoted_codex_composer_text() {
+    let fx = ScriptedTmux::new();
+    fx.driver
+        .send_keys_for_engine("long", &"x".repeat(801), Some(Engine::Trae))
+        .unwrap();
+
+    let calls = std::fs::read_to_string(&fx.log).unwrap();
+    assert_eq!(
+        calls.matches("send-keys -t =long: Enter").count(),
+        1,
+        "TraeX/Claude panes must not receive Codex retry Enters:\n{calls}"
+    );
+    assert!(
+        !calls.contains("capture-pane -p -t =long:"),
+        "non-Codex sends should not spend a capture on Codex draft detection:\n{calls}"
+    );
 }
 
 #[test]

@@ -56,7 +56,7 @@
 //!
 //! Usage: pmtui [--registry <path>] [--socket <name>]
 //!        pmtui spawn --message <text> [options]
-//!        pmtui hook turn-complete
+//!        pmtui hook <turn-complete|session-start>
 //!
 //! The command line is parsed into an [`Action`] before anything else happens, so `spawn`
 //! runs without terminal setup, the dashboard singleton, the registry, or tmux.
@@ -207,6 +207,7 @@ enum Action {
     Dashboard(Args),
     Spawn(spawn_cli::SpawnCli),
     HookTurnComplete,
+    HookSessionStart,
     Help,
     SpawnHelp,
 }
@@ -221,12 +222,17 @@ fn parse_action(argv: &[String]) -> std::result::Result<Action, spawn_cli::Usage
     if argv.first().is_some_and(|arg| arg == "hook") {
         return match argv.get(1).map(String::as_str) {
             Some("turn-complete") if argv.len() == 2 => Ok(Action::HookTurnComplete),
+            Some("session-start") if argv.len() == 2 => Ok(Action::HookSessionStart),
+            Some("turn-complete" | "session-start") => Err(spawn_cli::UsageError {
+                message: format!("hook: unexpected argument {:?}", argv[2]),
+                json: spawn_cli::wants_json(argv),
+            }),
             Some(other) => Err(spawn_cli::UsageError {
                 message: format!("hook: unknown hook {other:?}"),
                 json: spawn_cli::wants_json(argv),
             }),
             None => Err(spawn_cli::UsageError {
-                message: "hook: expected turn-complete".into(),
+                message: "hook: expected turn-complete or session-start".into(),
                 json: spawn_cli::wants_json(argv),
             }),
         };
@@ -244,8 +250,8 @@ fn parse_action(argv: &[String]) -> std::result::Result<Action, spawn_cli::Usage
 const HELP: &str = concat!(
     "pmtui — agent-manager dashboard\n\n",
     "Usage: pmtui [--registry <path>] [--socket <name>]\n",
-    "       pmtui spawn --message <text> [options]\n\n",
-    "       pmtui hook turn-complete\n\n",
+    "       pmtui spawn --message <text> [options]\n",
+    "       pmtui hook <turn-complete|session-start>\n\n",
     "--registry <path>  registry JSON (default: ~/.config/pmd/registry.json)\n",
     "--socket <name>    private tmux server socket (default: pmd)\n",
     "spawn              from inside a managed session, ask the dashboard for a Standard child\n",
@@ -311,6 +317,13 @@ fn dispatch(
                 Ok(1)
             }
         },
+        Ok(Action::HookSessionStart) => match record_session_identity(spawn.env, &hook_payload()) {
+            Ok(_) => Ok(0),
+            Err(error) => {
+                emit(err, &format!("hook session-start: {error:#}\n"));
+                Ok(1)
+            }
+        },
         Ok(Action::Help) => {
             print_help(err);
             Ok(0)
@@ -337,11 +350,6 @@ fn dispatch(
     }
 }
 
-/// The most of a hook payload worth reading. TraeX's `Stop` payload carries the turn's last
-/// assistant message, so it can be long; the id sits in front of it and a cut-off payload only
-/// costs the id for this one turn.
-const HOOK_PAYLOAD_MAX: u64 = 1 << 20;
-
 /// What the engine piped to the hook, or nothing when stdin is a terminal — a person running the
 /// command by hand — so the hook never waits for input nobody will type.
 fn hook_payload() -> String {
@@ -351,10 +359,7 @@ fn hook_payload() -> String {
         return String::new();
     }
     let mut payload = String::new();
-    let _ = stdin
-        .lock()
-        .take(HOOK_PAYLOAD_MAX)
-        .read_to_string(&mut payload);
+    let _ = stdin.lock().read_to_string(&mut payload);
     payload
 }
 
@@ -366,20 +371,8 @@ fn hook_payload() -> String {
 /// a reader that sees the turn also sees the id. A payload with no usable id records nothing and
 /// still signals the turn: the turn is the fact pmd waits for, and the id is only "not known yet".
 fn run_turn_complete_hook(env: &dyn Fn(&str) -> Option<String>, payload: &str) -> Result<()> {
-    let state_dir = env(tmux::ENV_STATE_DIR)
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-        .with_context(|| format!("{} is not set", tmux::ENV_STATE_DIR))?;
-    let daemon_dir = state_dir.join(".daemon");
-    std::fs::create_dir_all(&daemon_dir)
-        .with_context(|| format!("create_dir_all {}", daemon_dir.display()))?;
-    if let Some(id) = reported_thread_id(payload) {
-        // `ProjectPaths::codex_conversation_id`, the file pmd and pmtui both read the reported id from.
-        let path = daemon_dir.join("conversation-id");
-        agent_manager::state::write_text_atomic(&path, &id)
-            .with_context(|| format!("write {}", path.display()))?;
-    }
-    let path = daemon_dir.join("turn-complete");
+    let paths = record_session_identity(env, payload)?;
+    let path = paths.turn_signal();
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -389,6 +382,40 @@ fn run_turn_complete_hook(env: &dyn Fn(&str) -> Option<String>, payload: &str) -
         .with_context(|| format!("write {}", path.display()))?;
     file.sync_data()
         .with_context(|| format!("sync {}", path.display()))
+}
+
+/// A fork needs its assigned identity before a turn runs. SessionStart therefore
+/// shares identity validation with Stop but must not advance the completed-turn count.
+fn record_session_identity(
+    env: &dyn Fn(&str) -> Option<String>,
+    payload: &str,
+) -> Result<ProjectPaths> {
+    let state_dir = env(tmux::ENV_STATE_DIR)
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .with_context(|| format!("{} is not set", tmux::ENV_STATE_DIR))?;
+    if !state_dir.is_absolute() || !state_dir.is_dir() {
+        anyhow::bail!(
+            "{}={} is not an existing absolute directory",
+            tmux::ENV_STATE_DIR,
+            state_dir.display()
+        );
+    }
+    let paths = ProjectPaths::from_state_dir(&state_dir).with_context(|| {
+        format!(
+            "{}={} is not a pmtui state directory",
+            tmux::ENV_STATE_DIR,
+            state_dir.display()
+        )
+    })?;
+    std::fs::create_dir_all(paths.daemon_dir())
+        .with_context(|| format!("create_dir_all {}", paths.daemon_dir().display()))?;
+    if let Some(id) = reported_thread_id(payload) {
+        let path = paths.codex_conversation_id();
+        agent_manager::state::write_text_atomic(&path, &id)
+            .with_context(|| format!("write {}", path.display()))?;
+    }
+    Ok(paths)
 }
 
 /// The validated `session_id` of a hook payload, or `None` when there is none or it is not a UUID.

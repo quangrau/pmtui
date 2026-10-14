@@ -80,14 +80,15 @@ impl JobScheduler {
         // `idle_fingerprint` content-stability gate. When on, the engine appends one byte to
         // `paths.turn_signal()` on every completed turn (see `worker::build_loop_command`).
         let turn_signal = self.paths.turn_signal();
-        let hook_on = worker::turn_hook_enabled();
+        let hook_signal = worker::turn_hook_runnable_for(self.engine, self.pmtui_bin.as_deref())
+            .then_some(turn_signal.as_path());
         // Directory trust remains the engine's own prompt. pmd never injects a
         // profile or modifies the user's Codex configuration.
         let argv = worker::build_loop_command(
             self.engine,
             &resume,
             std::slice::from_ref(&self.work_dir),
-            hook_on.then_some(turn_signal.as_path()),
+            hook_signal,
             self.worker_model.as_deref(),
         );
         // The old pane's decision is stale before a replacement worker is started. Termination
@@ -158,21 +159,8 @@ impl JobScheduler {
     /// Write the canonical worker `SKILL.md`; Claude additionally gets its exact per-skill alias.
     /// A failure is retried on a later sweep. NEVER creates/modifies the user's `AGENTS.md`.
     fn install_worker_skill(&mut self) {
-        let canonical = self.paths.canonical_worker_skill_file();
-        let canonical_parent_ready = canonical
-            .parent()
-            .map(std::fs::create_dir_all)
-            .transpose()
-            .is_ok();
-        let canonical_written = canonical_parent_ready
-            && crate::state::write_text_atomic(&canonical, crate::skills::WORKER_SKILL_MD).is_ok();
-        let engine_ready = match self.engine {
-            crate::registry::Engine::Claude => {
-                crate::skills::ensure_claude_worker_skill_link(&self.paths).is_ok()
-            }
-            crate::registry::Engine::Codex | crate::registry::Engine::Trae => true,
-        };
-        self.worker_skill_installed = canonical_written && engine_ready;
+        self.worker_skill_installed =
+            crate::skills::install_worker_skill(&self.paths, self.engine).is_ok();
         if !self.worker_skill_installed {
             eprintln!(
                 "worker-skill native install failed for {} ({})",
@@ -234,15 +222,47 @@ impl JobScheduler {
         // as a thread NAME, and `traex resume <uuid>` looks a UUID up as a thread id only, so a
         // name in the ledger or the registry never resumes, turn or no turn (measured on traex
         // 0.209.1). Until the hook reports a thread, start one; nothing is lost, because a
-        // conversation that never completed a turn has nothing to resume.
+        // conversation that never completed a turn has nothing to resume. A reported thread gets
+        // one unconfirmed resume attempt. A newer same-id hook write confirms that the resume
+        // reached TraeX even if the worker dies before its first marker; a stale revision still
+        // falls back to a fresh conversation once.
         if self.engine == Engine::Trae {
-            next.resume_unconfirmed = false;
-            return match crate::state::codex_identity::read(&self.paths) {
-                Some(id) => {
+            return match super::marker::reported_identity_revision(
+                &self.paths.codex_conversation_id(),
+            ) {
+                Some((id, revision)) => {
+                    if next.resume_unconfirmed
+                        && next.conversation_id.as_deref() == Some(id.as_str())
+                    {
+                        if next
+                            .conversation_id_revision
+                            .as_ref()
+                            .is_some_and(|prior| prior != &revision)
+                        {
+                            next.resume_unconfirmed = false;
+                            next.conversation_id_revision = Some(revision);
+                            return Resume::Continue(id);
+                        }
+                        if next.conversation_id_revision.is_none() {
+                            next.conversation_id_revision = Some(revision);
+                            return Resume::Continue(id);
+                        }
+                        next.conversation_id = None;
+                        next.resume_unconfirmed = false;
+                        next.conversation_id_revision = None;
+                        let _ = std::fs::remove_file(self.paths.codex_conversation_id());
+                        return self.mint_or_fresh(next);
+                    }
                     next.conversation_id = Some(id.clone());
+                    next.resume_unconfirmed = true;
+                    next.conversation_id_revision = Some(revision);
                     Resume::Continue(id)
                 }
-                None => self.mint_or_fresh(next),
+                None => {
+                    next.resume_unconfirmed = false;
+                    next.conversation_id_revision = None;
+                    self.mint_or_fresh(next)
+                }
             };
         }
         if let Some(id) = next.conversation_id.clone() {

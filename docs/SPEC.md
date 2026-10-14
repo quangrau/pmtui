@@ -420,6 +420,8 @@ person can select Autopilot later. A fork MUST NOT make a git branch, a worktree
 
 - A live source MUST be free of a person and stably idle before a fork.
 - If the product cannot prove the identity of the conversation, it refuses the fork and says what to do.
+- A TRAE fork MUST use the source identity reported by its engine hook. A saved thread name MUST NOT
+  replace that report or prevent its use, because a name does not identify a resumable thread.
 - A fork either publishes a child that runs, or removes what it staged.
 - If the product cannot stop the terminal of the child, it keeps the disabled row. It MUST NOT hide a live
   process.
@@ -591,14 +593,20 @@ The supervisor MUST NOT make a second conversation for Autopilot. The person and
 persistent terminal.
 
 The supervisor MAY install an engine hook that records a completed turn. Claude uses a Stop hook. Codex
-uses its notify hook. TRAE CLI uses a `hooks.Stop` command that runs `pmtui hook turn-complete`; that
-command derives the signal path from the managed-session environment, so the trusted hook command is stable
-across sessions. The product MUST NOT bypass hook trust. If the engine asks a person to review the hook, the
-prompt stays in the terminal for that person.
+uses its notify hook. TRAE CLI uses `hooks.Stop` with `pmtui hook turn-complete` and
+`hooks.SessionStart` with `pmtui hook session-start`; those commands derive paths from the managed-session
+environment, so the trusted hook command is stable across sessions. They MUST run the `PMTUI_BIN` supplied
+by the managed environment and MUST NOT fall back to a `pmtui` found on PATH. `PM_TURN_HOOK=off`, `0`, or
+`false` disables hook injection for each engine. The product MUST NOT bypass hook trust. If the engine asks
+a person to review the hook, the prompt stays in the terminal for that person.
 
 Project-local skills MUST be written once under `.agents/skills/`, which Codex and TraeX discover. Claude
 MAY also receive exact per-skill compatibility symlinks under `.claude/skills/`. The product MUST NOT
 create or edit the user's `AGENTS.md` to deliver a skill.
+
+The product MAY install worker skills before a terminal starts, so engines that read skills only at
+startup can use them after a mode change. TraeX nudges MUST include the report requirements because
+an existing terminal may not have loaded the worker skill.
 
 If an Autopilot session waits for a decision from a person, and the product cannot read its mode setting,
 the supervisor stays available. It MUST NOT type until it can read the setting again. An explicit Standard
@@ -641,7 +649,13 @@ look stalled. A live busy terminal is newer evidence, and the product continues 
 **On a session that the supervisor does not drive, live activity wins over recorded state.** Nothing
 advances the record of that session, so the record stays as it was when the mode last changed. A working
 terminal therefore sets the state that the dashboard shows. The open decision stays in the record and
-stays visible. Only the claim that the product waits for a person goes away.
+stays visible. Only the claim that the product waits for a person goes away. A hook or turn signal from
+the last driven state is not authority after the session leaves Autopilot; the live terminal is the newer
+source.
+
+For TRAE CLI, a resumed thread remains unconfirmed until the worker writes a marker or the hook writes
+the same thread id again after the resume launch. A stale prior hook write MUST NOT by itself confirm the
+resume.
 
 A session that is idle at its prompt with an open decision still needs a person. A decision on a session
 that the supervisor does drive keeps its place.
@@ -854,6 +868,10 @@ These decisions stay with a person:
 - confirmation that the goal is complete; and
 - any decision that is still unsafe, or that the product cannot classify or validate.
 
+A change that can be reverted still stays with a person if it crosses another boundary.
+Major migrations of security-critical dependencies and removal of security audit evidence
+are changes to security, even when the goal is routine maintenance.
+
 ### The Goal-aware Decider
 
 The decider answers whether one routine decision moves the goal forward, and says what the worker must do.
@@ -876,6 +894,11 @@ The product reviews more than one routine decision in sequence. One answer autho
 failure or a refusal on one decision MUST NOT authorize a sibling, and MUST NOT escalate a valid sibling.
 
 If the decider is not available, the decisions that wait stay visible and go to a person.
+
+The person MAY select Claude, Codex or TRAE as the decider, independently of the worker.
+Changing the selected engine or model MUST let the supervisor try that selection again after
+a transport failure. An unchanged selection MUST keep its failure state across a restart.
+A consult already in progress MUST keep its original answer source until it ends.
 
 ### The Directive
 
@@ -1049,10 +1072,13 @@ happen again. A restart MUST NOT do any of these:
     recorded it rather than only where some earlier decision happened to be written.
   - An identity it cannot read, or one that no longer looks like an identity, MUST read as "not known
     yet". The product then starts one conversation, and never passes an unusable value to the engine.
-  - An engine reports its identity only after its first turn of work ends. Until then the session has no
-    identity, and the product says so rather than inventing one.
+  - An engine MAY report its identity at startup or after a completed turn. Until it does, the session
+    has no identity, and the product says so rather than inventing one. A startup identity MUST NOT
+    count as a completed turn.
   - The identity comes from the engine. The product MUST NOT take it from the worker's own report, and
     MUST NOT ask a worker for it: a worker could name the conversation of another session.
+    This also applies before the first engine report: a worker claim MUST NOT fill an empty
+    identity in the runtime state.
   - The product MUST reconcile the identity it learns during its ordinary work, not only when it starts a
     terminal. A session that is running MUST NOT be left without the identity the engine has reported.
 - At most one supervisor drives one fleet. At most one dashboard changes it at a time.

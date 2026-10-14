@@ -110,22 +110,24 @@ impl fmt::Display for LaunchError {
 
 impl std::error::Error for LaunchError {}
 
-/// Canonical pmtui path for a pmtui process (`current_exe`) or pmd (its sibling `pmtui`, None if absent).
+/// Canonical pmtui path for this process: itself for `pmtui`, or a sibling for `pmd`.
 pub fn pmtui_bin_for_current_process() -> Option<PathBuf> {
     pmtui_bin_for_exe(&std::env::current_exe().ok()?)
 }
 
-/// [`pmtui_bin_for_current_process`] for the executable at `exe`: `exe` itself when it is
-/// named `pmtui`, otherwise the `pmtui` beside it. Either way the answer is the canonical path
-/// of an executable regular file, or `None`, so a stale or missing install is omitted rather
-/// than handed to an agent that would fail to run it.
+/// [`pmtui_bin_for_current_process`]: `exe` itself when it is named `pmtui`, otherwise the
+/// `pmtui` beside it.
 pub(crate) fn pmtui_bin_for_exe(exe: &Path) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     let candidate = if exe.file_name().is_some_and(|name| name == "pmtui") {
         exe.to_path_buf()
     } else {
         exe.with_file_name("pmtui")
     };
+    executable_file(&candidate)
+}
+
+fn executable_file(candidate: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
     let canonical = std::fs::canonicalize(candidate).ok()?;
     let runnable = std::fs::metadata(&canonical)
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0);

@@ -98,6 +98,114 @@ fn the_persistent_terminal_carries_its_session_identity_and_pmds_pmtui() {
 }
 
 #[test]
+fn pmd_omits_trae_hooks_until_it_can_name_pmtui() {
+    let mut fx = setup(Tier::Standard, Engine::Trae, Some(300));
+    let sess = loop_session(&fx);
+
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    let argv = launched_argv(&fx, &sess).unwrap();
+    assert!(
+        !argv.iter().any(|arg| arg.contains("hooks.Stop")
+            || arg.contains("hooks.SessionStart")
+            || arg.contains("PMTUI_BIN")),
+        "{argv:?}"
+    );
+
+    fx.sched.set_pmtui_bin(Some(PathBuf::from("/opt/am/pmtui")));
+    fx.driver.set_alive(&sess, false);
+    fx.clock.set(START + LAUNCH_GRACE_S);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    let argv = launched_argv(&fx, &sess).unwrap();
+    assert!(argv.iter().any(|arg| arg.contains("hooks.Stop")));
+    assert!(argv.iter().any(|arg| arg.contains("hooks.SessionStart")));
+}
+
+#[test]
+fn codex_identity_file_rewrites_do_not_replace_the_in_memory_run() {
+    const CODEX_ID: &str = "019bf0a2-7c3d-4e5f-8a9b-0c1d2e3f4a5b";
+    let mut fx = setup_with(Tier::Standard, Engine::Codex, Some(300), |ledger| {
+        ledger.conversation_id = Some(CODEX_ID.into());
+    });
+    fx.sched.run = JobRun::Monitoring { until: START + 999 };
+    state::write_text_atomic(&fx.paths.codex_conversation_id(), CODEX_ID).unwrap();
+
+    let out = fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
+    assert_eq!(
+        out,
+        JobTick::Monitoring { until: START + 999 },
+        "Codex notify rewrites are turn signals, not scheduler state changes"
+    );
+    assert!(
+        fx.driver.launched().is_empty(),
+        "a rewritten Codex identity file must not revive the saved Idle run"
+    );
+    assert_eq!(
+        ledger(&fx).conversation_id.as_deref(),
+        Some(CODEX_ID),
+        "Codex identity remains unchanged on same-id hook rewrites"
+    );
+}
+
+#[test]
+fn codex_identity_adoption_does_not_clear_resume_fallback_state() {
+    const CODEX_ID: &str = "019bf0a2-7c3d-4e5f-8a9b-0c1d2e3f4a5b";
+    let prior_revision = job::MarkerRevision {
+        modified_ns: 1,
+        len: 2,
+        inode: 3,
+        fingerprint: "prior".into(),
+    };
+    let mut fx = setup_with(Tier::Standard, Engine::Codex, Some(300), |ledger| {
+        ledger.resume_unconfirmed = true;
+        ledger.conversation_id_revision = Some(prior_revision.clone());
+        ledger.run = JobRun::Monitoring { until: START + 999 };
+    });
+    fx.sched.run = JobRun::Monitoring { until: START + 999 };
+    state::write_text_atomic(&fx.paths.codex_conversation_id(), CODEX_ID).unwrap();
+
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
+    let persisted = ledger(&fx);
+    assert_eq!(persisted.conversation_id.as_deref(), Some(CODEX_ID));
+    assert!(
+        persisted.resume_unconfirmed,
+        "Codex id adoption must not clear the resume fallback gate"
+    );
+    assert_eq!(
+        persisted.conversation_id_revision.as_ref(),
+        Some(&prior_revision),
+        "Codex must not mutate TraeX's revision bookkeeping"
+    );
+}
+
+#[test]
+fn trae_same_thread_rewrites_do_not_replace_the_in_memory_run_after_resume_is_confirmed() {
+    let mut fx = setup(Tier::Standard, Engine::Trae, Some(300));
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let revision = trae_reported_revision(&fx);
+    let mut saved = ledger(&fx);
+    saved.conversation_id = Some(TRAE_THREAD.into());
+    saved.conversation_id_revision = Some(revision);
+    saved.resume_unconfirmed = false;
+    job::save(&fx.paths, &saved).unwrap();
+    fx.sched.run = JobRun::Monitoring { until: START + 999 };
+
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let out = fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
+    assert_eq!(
+        out,
+        JobTick::Monitoring { until: START + 999 },
+        "same-id TraeX Stop rewrites are turn signals after resume has been confirmed"
+    );
+    assert!(
+        fx.driver.launched().is_empty(),
+        "a same-id TraeX rewrite must not revive the saved Idle run"
+    );
+}
+
+#[test]
 fn a_typed_launch_failure_keeps_its_text_under_the_session_context() {
     let mut fx = setup(Tier::Standard, Engine::Claude, Some(300));
     let sess = loop_session(&fx);
@@ -210,6 +318,7 @@ fn codex_launches_fresh_interactive_without_a_pinned_id() {
 #[test]
 fn trae_autopilot_launches_a_persistent_loop_session() {
     let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    fx.sched.set_pmtui_bin(Some(PathBuf::from("/opt/am/pmtui")));
     let sess = loop_session(&fx);
 
     let out = fx.sched.tick(&fx.driver, &fx.clock).unwrap();
@@ -650,7 +759,7 @@ fn ensure_session_installs_the_native_trae_skill() {
     );
     assert!(
         fx.sched.worker_skill_available(),
-        "a successful native TraeX install takes the lean nudge branch"
+        "a successful native TraeX install lets the nudge name the worker skill"
     );
     assert!(!fx.paths.claude_project_skill_dir().exists());
     assert!(
@@ -966,7 +1075,13 @@ const TRAE_THREAD: &str = "01a133c3-b12f-7033-ae77-38f3294fb68e";
 fn trae_hook_reported(fx: &Fx, thread: &str) {
     let path = fx.paths.codex_conversation_id();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, thread).unwrap();
+    state::write_text_atomic(&path, thread).unwrap();
+}
+
+fn trae_reported_revision(fx: &Fx) -> job::MarkerRevision {
+    crate::job_engine::marker::reported_identity_revision(&fx.paths.codex_conversation_id())
+        .expect("reported TraeX identity")
+        .1
 }
 
 #[test]
@@ -985,7 +1100,110 @@ fn a_trae_relaunch_resumes_the_thread_its_hook_reported() {
         Some(TRAE_THREAD)
     );
     assert_eq!(ledger(&fx).conversation_id.as_deref(), Some(TRAE_THREAD));
+    assert!(ledger(&fx).resume_unconfirmed);
+}
+
+#[test]
+fn a_stale_trae_reported_thread_falls_back_to_a_fresh_conversation_once() {
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let sess = loop_session(&fx);
+
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
+    assert_eq!(
+        launched_flag(&fx, &sess, "resume").as_deref(),
+        Some(TRAE_THREAD)
+    );
+    assert!(ledger(&fx).resume_unconfirmed);
+
+    fx.driver.set_alive(&sess, false);
+    fx.clock.set(START + LAUNCH_GRACE_S);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
+    let argv = launched_argv(&fx, &sess).expect("TraeX fallback launched");
+    assert!(
+        !argv.iter().any(|arg| arg == "resume" || arg == TRAE_THREAD),
+        "the stale thread must not be resumed again: {argv:?}"
+    );
+    assert!(
+        argv.windows(2).any(|pair| pair[0] == "--session-id"),
+        "fallback starts a fresh named TraeX conversation: {argv:?}"
+    );
+    assert!(!fx.paths.codex_conversation_id().exists());
     assert!(!ledger(&fx).resume_unconfirmed);
+}
+
+#[test]
+fn a_new_same_trae_thread_hook_confirms_a_resume_before_the_first_marker() {
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let sess = loop_session(&fx);
+
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    assert_eq!(
+        launched_flag(&fx, &sess, "resume").as_deref(),
+        Some(TRAE_THREAD)
+    );
+    assert!(ledger(&fx).resume_unconfirmed);
+
+    trae_hook_reported(&fx, TRAE_THREAD);
+    fx.driver.set_alive(&sess, false);
+    fx.clock.set(START + LAUNCH_GRACE_S);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
+    let argv = launched_argv(&fx, &sess).expect("TraeX relaunched");
+    assert!(
+        argv.windows(2).any(|pair| pair == ["resume", TRAE_THREAD]),
+        "a same-id hook rewrite confirms the prior resume: {argv:?}"
+    );
+    assert!(fx.paths.codex_conversation_id().exists());
+}
+
+#[test]
+fn ensure_session_confirms_a_new_same_trae_thread_hook_before_launch() {
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let mut stale = trae_reported_revision(&fx);
+    stale.modified_ns = stale.modified_ns.wrapping_add(1);
+    let mut base = ledger(&fx);
+    base.conversation_id = Some(TRAE_THREAD.into());
+    base.resume_unconfirmed = true;
+    base.conversation_id_revision = Some(stale);
+    let sess = loop_session(&fx);
+
+    fx.sched.ensure_session(&fx.driver, START, &base).unwrap();
+
+    let argv = launched_argv(&fx, &sess).expect("TraeX relaunched");
+    assert!(argv.windows(2).any(|pair| pair == ["resume", TRAE_THREAD]));
+    let persisted = ledger(&fx);
+    assert!(!persisted.resume_unconfirmed);
+    assert_eq!(
+        persisted.conversation_id_revision.as_ref(),
+        Some(&trae_reported_revision(&fx))
+    );
+}
+
+#[test]
+fn ensure_session_baselines_legacy_unconfirmed_trae_thread_before_launch() {
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let mut base = ledger(&fx);
+    base.conversation_id = Some(TRAE_THREAD.into());
+    base.resume_unconfirmed = true;
+    base.conversation_id_revision = None;
+    let sess = loop_session(&fx);
+
+    fx.sched.ensure_session(&fx.driver, START, &base).unwrap();
+
+    let argv = launched_argv(&fx, &sess).expect("TraeX relaunched");
+    assert!(argv.windows(2).any(|pair| pair == ["resume", TRAE_THREAD]));
+    let persisted = ledger(&fx);
+    assert!(persisted.resume_unconfirmed);
+    assert_eq!(
+        persisted.conversation_id_revision.as_ref(),
+        Some(&trae_reported_revision(&fx))
+    );
 }
 
 #[test]

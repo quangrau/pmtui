@@ -42,7 +42,9 @@ use agent_manager::spawn::{
 use agent_manager::tmux::LaunchOutcome;
 use agent_manager::worktree;
 
-use super::create::{NewSession, fresh_launch_bytes, fresh_standard_argv, reserve_new_session};
+use super::create::{
+    NewSession, fresh_launch_bytes, fresh_standard_argv_with_pmtui_bin, reserve_new_session,
+};
 use crate::*;
 
 /// How long a started child has to show a live, dialog-free terminal.
@@ -665,7 +667,7 @@ impl App {
                 );
             }
         };
-        let plan = match plan_child(&reg, &job.request) {
+        let plan = match plan_child(&reg, &job.request, self.pmtui_bin.as_deref()) {
             Ok(plan) => plan,
             Err(PlanRefusal::Refused(refusal)) => {
                 return self.fail(job, refusal.code, refusal.message);
@@ -1099,11 +1101,12 @@ impl App {
             self.record_status();
             return;
         }
-        // KEPT, and inert: its process is gone, so the row exists to be seen and cleared with `d`. A
-        // codex row also learns its thread id here — codex has no caller-chosen conversation id, so the
-        // only record of which conversation this run created is the one it announced in its own stream.
+        // KEPT, and inert: its process is gone, so the row exists to be seen and cleared with `d`.
+        // Codex and TraeX rows also learn their thread id here. Codex has no caller-chosen id; TraeX
+        // keeps pmtui's `--session-id` as a non-resumable name, so the engine stream is the only
+        // resumable conversation identity for both engines.
         // Without this the conversation of a job that failed, or asked for a person, dies with the row.
-        self.pin_codex_thread(row);
+        self.pin_reported_thread(row);
         self.disable_row(&row.id);
         self.status = format!(
             "{} \u{b7} {} \u{2014} {headline}",
@@ -1113,14 +1116,17 @@ impl App {
         self.record_status();
     }
 
-    /// Record the thread id a codex run announced, when its row does not already name a conversation.
+    /// Record the thread id a Codex or TraeX run announced, when its row does not already name a
+    /// conversation.
     ///
-    /// A no-op for claude (its id is minted before the launch and pinned then), for a row that already
-    /// has one, and for a run whose stream never said. Failing to write it is not worth failing a
-    /// harvest over: the outcome is already recorded, and this only decides whether a human can pick the
-    /// conversation up.
-    fn pin_codex_thread(&mut self, row: &ProjectEntry) {
-        if row.engine != Some(Engine::Codex) || row.conversation_id.is_some() {
+    /// A no-op for Claude (its id is minted before the launch and pinned then), for a row that
+    /// already has one, and for a run whose stream never said. Failing to write it is not worth
+    /// failing a harvest over: the outcome is already recorded, and this only decides whether a
+    /// human can pick the conversation up.
+    fn pin_reported_thread(&mut self, row: &ProjectEntry) {
+        if !matches!(row.engine, Some(Engine::Codex | Engine::Trae))
+            || row.conversation_id.is_some()
+        {
             return;
         }
         let log = std::fs::read_to_string(entry_state_paths(row).job_log()).unwrap_or_default();
@@ -1370,7 +1376,8 @@ impl App {
         // launch, so a dashboard that stops at any later point leaves a row that names it.
         let engine = row.engine.unwrap_or(Engine::Claude);
         let conversation = job_engine::mint_uuid_v4();
-        let pinned = (engine != Engine::Codex).then(|| conversation.clone());
+        let pinned =
+            (!matches!(engine, Engine::Codex | Engine::Trae)).then(|| conversation.clone());
         if let Err(error) = self.update_child(job, &child, Some(LaunchState::Pending), |entry| {
             set_launch_state(entry, LaunchState::Attempted);
             if pinned.is_some() {
@@ -1395,15 +1402,16 @@ impl App {
             self.launch_job_step(&row, &paths, engine, &session, &conversation)
         } else {
             // A CHAT child, as v1 staged: the persistent interactive agent a human talks to.
-            let argv = fresh_standard_argv(
+            let env = self.managed_env(&row.id, &row.root);
+            let argv = fresh_standard_argv_with_pmtui_bin(
                 engine,
                 &conversation,
                 row.worker_model.as_deref(),
                 &paths.turn_signal(),
                 row.initial_prompt.as_deref(),
+                env.pmtui_bin.as_deref(),
             );
-            let env = self.managed_env(&row.id, &row.root);
-            crate::session::install_spawn_skill(&row.root, engine, &env);
+            crate::session::install_prelaunch_skills(&row.root, engine, &env);
             self.agent_tmux
                 .launch_interactive(&session, &row.root, &argv, &env)
         };
@@ -1968,7 +1976,11 @@ impl From<SpawnError> for PlanRefusal {
 }
 
 /// Validate a request against the registry and resolve its defaults from the parent row.
-fn plan_child(reg: &Registry, request: &SpawnRequest) -> Result<ChildPlan, PlanRefusal> {
+fn plan_child(
+    reg: &Registry,
+    request: &SpawnRequest,
+    pmtui_bin: Option<&Path>,
+) -> Result<ChildPlan, PlanRefusal> {
     let args = request.args.normalized();
     let parent = reg
         .projects
@@ -2007,7 +2019,14 @@ fn plan_child(reg: &Registry, request: &SpawnRequest) -> Result<ChildPlan, PlanR
     let title = child_title(&args)?;
     let name = agent_manager::registry::normalize_display_name(args.name.as_deref().unwrap_or(""))
         .map_err(|error| refusal(ErrorCode::InvalidArgument, format!("name: {error}")))?;
-    let bytes = fresh_launch_bytes(reg, &dir, engine, model.as_deref(), &args.message);
+    let bytes = fresh_launch_bytes(
+        reg,
+        &dir,
+        engine,
+        model.as_deref(),
+        &args.message,
+        pmtui_bin,
+    );
     if bytes > tmux::LAUNCH_COMMAND_MAX_BYTES {
         return Err(refusal(
             ErrorCode::MessageTooLong,

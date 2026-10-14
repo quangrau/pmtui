@@ -175,9 +175,14 @@ impl JobScheduler {
         }
         // The last look before typing reads styles too, so a person's draft in the box is Busy.
         match driver.capture_tail(&session, 40) {
-            Ok(_)
-                if crate::tmux::styled_activity(driver, &session, 40)
-                    == crate::tmux::PaneActivity::Idle => {}
+            Ok(capture)
+                if {
+                    if self.engine == Engine::Claude {
+                        crate::tmux::styled_activity(driver, &session, 40)
+                    } else {
+                        crate::tmux::classify_pane_for_engine(&capture, self.engine)
+                    }
+                } == crate::tmux::PaneActivity::Idle => {}
             Ok(capture) => return self.busy_pane_recheck(now, base, &capture),
             Err(_) => return self.busy_recheck(now, base, HoldReason::Transient),
         }
@@ -185,7 +190,10 @@ impl JobScheduler {
         // disk, the agent's own `pending_context`/`last_status`/`last_plan`, and the WHITELISTED
         // "Since last wake" signal flags (elapsed bucket, answer-just-arrived, stale-plan streak).
         let text = self.compose_nudge(base, now, answer_arrived, marker_less_finish);
-        if driver.send_keys(&session, &text).is_err() {
+        if driver
+            .send_keys_for_engine(&session, &text, Some(self.engine))
+            .is_err()
+        {
             // Transient tmux error: route through `busy_recheck` (NOT a bare re-park) so a
             // PERSISTENTLY failing send escalates a human-dismissable Stuck at
             // `DEFAULT_STALL_BUSY_S` (~30min) instead of festering until only the 24h
@@ -478,25 +486,20 @@ pub fn loop_nudge_prompt_for_engine(input: LoopNudgePromptInput<'_>, engine: Eng
         e
     };
 
-    // Both engines can discover the canonical skill from natural-language context. Claude's
+    // All engines can discover the canonical skill from natural-language context. Claude's
     // inline reference keeps its familiar slash-prefixed name; Codex receives the generic name
-    // because it has no Claude slash-command surface. If installation failed, neither engine is
-    // pointed at a procedure it cannot load; the compact inline fallback remains executable.
+    // because it has no Claude slash-command surface; TraeX follows that generic form but still
+    // gets the compact schema below: an adopted pane can predate the file pmd just wrote.
     let trigger = match (engine, skill_available) {
         (Engine::Claude, true) => format!(
             "Continue the goal per your /{WORKER_SKILL_NAME} skill — re-read it now if it isn't \
              in context; it holds your full loop protocol and the machine-report (WakeReport) \
              schema. Do whatever needs attention right now."
         ),
-        (Engine::Codex, true) => {
+        (Engine::Codex | Engine::Trae, true) => {
             "Continue the goal per your `agent-manager-worker` skill — re-read it now if it isn't \
              in context; it holds your full loop protocol and the machine-report (WakeReport) \
              schema. Do whatever needs attention right now."
-                .to_string()
-        }
-        (Engine::Trae, true) => {
-            "Continue the goal and follow the inline fallback below because TRAE has no proven \
-             Autopilot worker skill contract. Do whatever needs attention right now."
                 .to_string()
         }
         (_, false) => {
@@ -533,12 +536,10 @@ pub fn loop_nudge_prompt_for_engine(input: LoopNudgePromptInput<'_>, engine: Eng
         met, write a `blocked` marker with a `confirm_done` stop, and never treat the goal as \
         finished without human confirmation.";
 
-    // The compact degrade — added when the native skill is NOT known-installed, and ALWAYS for
-    // TRAE, whose trigger points at it: TRAE has no worker skill contract, so this is the only
-    // place it learns the report schema. Without it a TRAE worker wrote `seq`/`status`/
-    // `next_step` with no `state`, every report failed to parse, and the session was parked
-    // `Stuck` after three wakes. It never introduces a compatibility copy; the canonical skill
-    // remains the only source.
+    // The compact degrade — added when the native skill is NOT known-installed, and always for
+    // TraeX because its running process may have snapshotted skills before pmd installed the file.
+    // Without a schema fallback a skill-less worker can write `seq`/`status`/`next_step` with no
+    // `state`; every report then fails to parse, and the session parks `Stuck` after three wakes.
     let inline_contract = !skill_available || engine == Engine::Trae;
     let degrade = if !inline_contract {
         String::new()

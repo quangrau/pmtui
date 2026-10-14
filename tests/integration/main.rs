@@ -40,4 +40,6 @@ mod settings_update;
 mod single_instance;
 mod spawn;
 mod stubs;
+mod trae_identity;
+mod trae_input;
 mod ui_gallery;
