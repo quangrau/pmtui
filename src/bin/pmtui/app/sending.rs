@@ -236,7 +236,13 @@ impl App {
         if let Some(why) = pane_refusal(&capture) {
             anyhow::bail!("the pane changed while the message was waiting: {why}");
         }
-        self.agent_tmux.send_keys(&t.session, &payload)
+        let engine = self
+            .projects
+            .iter()
+            .find(|view| view.id == t.id)
+            .and_then(|view| view.engine);
+        self.agent_tmux
+            .send_keys_for_engine(&t.session, &payload, engine)
     }
 
     /// Ctrl+E in the send field: hand off to `$EDITOR`, seeded with what has been typed.

@@ -115,6 +115,14 @@ pub struct AgentLoopState {
     /// default that always resumes.
     #[serde(default)]
     pub resume_unconfirmed: bool,
+    /// The file revision of the hook-reported conversation id that started the current
+    /// unconfirmed TraeX resume.
+    ///
+    /// TraeX can report the SAME thread id again after a successful resume. The value is
+    /// proof only if the file revision changed after the launch; the id text alone cannot
+    /// distinguish a fresh hook event from the stale id that caused the resume attempt.
+    #[serde(default)]
+    pub conversation_id_revision: Option<MarkerRevision>,
     pub engine: Engine,
     /// Per-session heartbeat cadence in seconds; `None` ⇒ the harness default.
     #[serde(default)]
@@ -258,6 +266,9 @@ pub struct AgentLoopState {
     pub decider_latched: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decider_latch_reason: Option<String>,
+    /// Keep health tied to its selection so a restart cannot hide a configuration change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decider_health_selection: Option<DeciderHealthSelection>,
     /// Bounded, structured audit history for read-only decider consults. Operational behavior never
     /// depends on it: pmd writes it alongside the existing lifecycle state and pmtui only reads it.
     #[serde(
@@ -314,6 +325,13 @@ pub struct AgentLoopState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub situation: Option<LedgerSituation>,
     pub updated_at: Epoch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeciderHealthSelection {
+    pub engine: Engine,
+    pub model: Option<String>,
 }
 
 fn bool_is_false(value: &bool) -> bool {
@@ -521,6 +539,7 @@ impl AgentLoopState {
             created_at: now,
             conversation_id: None,
             resume_unconfirmed: false,
+            conversation_id_revision: None,
             engine,
             cadence_s,
             cadence_pinned: false,
@@ -544,6 +563,7 @@ impl AgentLoopState {
             advice_inflight: None,
             decider_latched: false,
             decider_latch_reason: None,
+            decider_health_selection: None,
             decider_runs: Vec::new(),
             turn_seq: 0,
             turn_trace: Vec::new(),
