@@ -155,9 +155,9 @@ impl App {
             (Some(engine), _) | (None, Some(engine)) => engine,
             (None, None) => Engine::Claude,
         };
-        if engine == Engine::Trae
-            && !agent_manager::worker::turn_hook_runnable_for(engine, self.pmtui_bin.as_deref())
-        {
+        let turn_hook_runnable =
+            agent_manager::worker::turn_hook_runnable_for(engine, self.pmtui_bin.as_deref());
+        if engine == Engine::Trae && !turn_hook_runnable {
             self.status = format!(
                 "{}: cannot fork TraeX without working pmtui hooks (PMTUI_BIN unavailable or hooks disabled)",
                 source.id
@@ -309,8 +309,7 @@ impl App {
         let argv = agent_manager::worker::build_fork_command(
             engine,
             &source_conversation,
-            agent_manager::worker::turn_hook_runnable_for(engine, self.pmtui_bin.as_deref())
-                .then_some(&fork.paths.turn_signal()),
+            turn_hook_runnable.then_some(&fork.paths.turn_signal()),
             (engine == Engine::Claude).then_some(identity_file.as_path()),
             source.worker_model.as_deref(),
         );

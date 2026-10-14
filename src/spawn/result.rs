@@ -179,37 +179,10 @@ fn claude_result(log: &str) -> Option<JobResult> {
 /// TraeX: current exec streams end with a turn terminator and the harness writes the model's
 /// schema to `job_last_message`; older v1-style logs carried the outcome in the LAST `type=result`.
 fn trae_result(log: &str, result_file: Option<&str>) -> Option<JobResult> {
-    let file_text = result_file.map(str::trim).filter(|text| !text.is_empty());
-    let from_file = file_text
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-        .and_then(|value| payload(&value));
-    let terminator = json_lines(log)
-        .filter_map(|v| {
-            v.get("type")
-                .and_then(|t| t.as_str())
-                .filter(|t| matches!(*t, "turn.completed" | "turn.failed"))
-                .map(str::to_string)
-        })
-        .last();
-    if let Some(terminator) = terminator {
-        if terminator == "turn.completed"
-            && let Some(result) = from_file
-        {
-            return Some(result);
-        }
-        let text = from_file
-            .map(|result| result.summary)
-            .or_else(|| file_text.map(str::to_string))
-            .or_else(|| last_agent_message(log))
-            .unwrap_or_default();
-        let outcome = if terminator == "turn.completed" {
-            JobOutcome::Done
-        } else {
-            JobOutcome::Failed
-        };
-        return Some(JobResult::clamped(outcome, &text, None));
-    }
+    codex_result(log, result_file).or_else(|| legacy_result_event(log))
+}
 
+fn legacy_result_event(log: &str) -> Option<JobResult> {
     let last = json_lines(log)
         .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("result"))
         .last()?;

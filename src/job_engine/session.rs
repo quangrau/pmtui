@@ -253,6 +253,15 @@ impl JobScheduler {
                         let _ = std::fs::remove_file(self.paths.codex_conversation_id());
                         return self.mint_or_fresh(next);
                     }
+                    if !next.resume_unconfirmed
+                        && next.conversation_id.as_deref() == Some(id.as_str())
+                        && next
+                            .conversation_id_revision
+                            .as_ref()
+                            .is_some_and(|prior| prior == &revision)
+                    {
+                        return Resume::Continue(id);
+                    }
                     next.conversation_id = Some(id.clone());
                     next.resume_unconfirmed = true;
                     next.conversation_id_revision = Some(revision);

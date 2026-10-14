@@ -188,6 +188,9 @@ Review the new hook in an ordinary TRAE session first. Existing sessions need a 
 to load it; hook trust remains a choice for you.
 Hook injection can be disabled with `PM_TURN_HOOK=off`, `0`, or `false`. When hooks are
 enabled, the managed terminal must carry `PMTUI_BIN`; hooks do not search PATH for `pmtui`.
+If either condition prevents a TraeX hook from running, restarting that same session does not fix the
+identity problem. Start it from a pmtui/pmd pair that supplies `PMTUI_BIN`, or turn hook injection back
+on.
 
 Once it has one, `Enter` resumes that conversation and a restart keeps it. Before this, neither the
 dashboard nor the driver had any way to know the id, so a Codex session that had been working for hours
