@@ -20,6 +20,7 @@ pub(crate) struct SendReq {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SendTarget {
     pub(crate) id: String,
+    pub(crate) engine: Option<Engine>,
     /// The PROJECT ROOT (the path the human entered on create), from which the
     /// interlock rebuilds the per-session state dir and the `pmchat-…` name.
     pub(crate) root: PathBuf,
@@ -158,15 +159,18 @@ pub(crate) fn send_decision(t: &SendTarget, p: &SendProbe) -> SendPlan {
     let Some(styled) = p.capture.as_deref() else {
         return SendPlan::Refuse("can't read the pane — nothing sent".into());
     };
-    if let Some(refusal) = pane_refusal(styled) {
+    if let Some(refusal) = pane_refusal(t.engine, styled) {
         return SendPlan::Refuse(refusal.into());
     }
     // Mid-response is FINE and is sent, not refused: the composer accepts it and it
     // becomes the agent's next turn. Refusing here would reproduce "it did nothing", and
     // the send only DELAYS pmd's next nudge (idle confirmations reset naturally).
-    if tmux::classify_pane_styled(styled) == tmux::PaneActivity::Busy
-        && tmux::has_composer(&tmux::unstyled(styled))
-    {
+    let cap = tmux::unstyled(styled);
+    let activity = match t.engine {
+        Some(Engine::Trae) => tmux::classify_pane_for_engine(&cap, Engine::Trae),
+        _ => tmux::classify_pane_styled(styled),
+    };
+    if activity == tmux::PaneActivity::Busy {
         return SendPlan::Send(format!("sent → {} (it was working)", t.id));
     }
     SendPlan::Send(format!("sent → {}", t.id))
@@ -180,7 +184,7 @@ pub(crate) fn send_decision(t: &SendTarget, p: &SendProbe) -> SendPlan {
 /// blocking state drawn around the input box, no prompt at all, and a person's unsent draft in
 /// the box (our text would be glued onto theirs and submitted). The dialog check precedes the
 /// prompt check so its clearer reason wins; `has_composer_in_tail` refuses a dialog anyway.
-pub(crate) fn pane_refusal(styled: &str) -> Option<&'static str> {
+pub(crate) fn pane_refusal(engine: Option<Engine>, styled: &str) -> Option<&'static str> {
     let cap = tmux::unstyled(styled);
     if tmux::classify_dialog(&cap).is_some() {
         return Some("dialog up — press Enter and answer it there");
@@ -194,10 +198,14 @@ pub(crate) fn pane_refusal(styled: &str) -> Option<&'static str> {
         }
         None => {}
     }
-    if !tmux::has_composer_in_tail(&cap, SEND_GATE_LINES) {
+    let has_composer = match engine {
+        Some(Engine::Trae) => tmux::has_composer_for_engine(&cap, Engine::Trae),
+        _ => tmux::has_composer_in_tail(&cap, SEND_GATE_LINES),
+    };
+    if !has_composer {
         return Some("no prompt on screen — press Enter to look");
     }
-    if tmux::claude_draft_in_box(styled) {
+    if engine != Some(Engine::Trae) && tmux::claude_draft_in_box(styled) {
         return Some(
             "the agent's input box has unsent text — press Enter, then submit or clear it",
         );

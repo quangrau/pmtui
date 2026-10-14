@@ -189,10 +189,16 @@ impl JobScheduler {
         // This whole re-read exists because it happens INSIDE `input.lock`: the pane can change while
         // this sender waits for the lock, which is the race the recheck above is also for.
         match driver.capture_tail(&session, 40) {
-            Ok(_)
-                if crate::tmux::styled_activity(driver, &session, 40)
-                    == crate::tmux::PaneActivity::Idle => {}
-            Ok(capture) => return self.busy_pane_recheck(now, base, &capture),
+            Ok(capture) => {
+                let activity = if self.engine == Engine::Trae {
+                    crate::tmux::classify_pane_for_engine(&capture, self.engine)
+                } else {
+                    crate::tmux::styled_activity(driver, &session, 40)
+                };
+                if activity != crate::tmux::PaneActivity::Idle {
+                    return self.busy_pane_recheck(now, base, &capture);
+                }
+            }
             Err(_) => return self.busy_recheck(now, base, HoldReason::Transient),
         }
         // The single seam that turns ledger + scheduler state into the nudge bytes: the goal on

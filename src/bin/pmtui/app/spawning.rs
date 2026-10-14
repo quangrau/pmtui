@@ -39,7 +39,9 @@ use agent_manager::spawn::{
 };
 use agent_manager::worktree;
 
-use super::create::fresh_launch_bytes;
+use super::create::{
+    NewSession, fresh_launch_bytes, fresh_standard_argv_with_pmtui_bin, reserve_new_session,
+};
 use crate::*;
 
 /// How long a started child has to show a live, dialog-free terminal.
@@ -662,7 +664,7 @@ impl App {
                 );
             }
         };
-        let plan = match plan_child(&reg, &job.request) {
+        let plan = match plan_child(&reg, &job.request, self.pmtui_bin.as_deref()) {
             Ok(plan) => plan,
             Err(PlanRefusal::Refused(refusal)) => {
                 return self.fail(job, refusal.code, refusal.message);
@@ -1397,14 +1399,15 @@ impl App {
             self.launch_job_step(&row, &paths, engine, &session, &conversation)
         } else {
             // A CHAT child, as v1 staged: the persistent interactive agent a human talks to.
-            let argv = fresh_standard_argv(
+            let env = self.managed_env(&row.id, &row.root);
+            let argv = fresh_standard_argv_with_pmtui_bin(
                 engine,
                 &conversation,
                 row.worker_model.as_deref(),
                 &paths.turn_signal(),
                 row.initial_prompt.as_deref(),
+                env.pmtui_bin.as_deref(),
             );
-            let env = self.managed_env(&row.id, &row.root);
             crate::session::install_prelaunch_skills(&row.root, engine, &env);
             self.agent_tmux
                 .launch_interactive(&session, &row.root, &argv, &env)
@@ -1970,7 +1973,11 @@ impl From<SpawnError> for PlanRefusal {
 }
 
 /// Validate a request against the registry and resolve its defaults from the parent row.
-pub(super) fn plan_child(reg: &Registry, request: &SpawnRequest) -> Result<ChildPlan, PlanRefusal> {
+fn plan_child(
+    reg: &Registry,
+    request: &SpawnRequest,
+    pmtui_bin: Option<&Path>,
+) -> Result<ChildPlan, PlanRefusal> {
     let args = request.args.normalized();
     let parent = reg
         .projects
@@ -2009,7 +2016,14 @@ pub(super) fn plan_child(reg: &Registry, request: &SpawnRequest) -> Result<Child
     let title = child_title(&args)?;
     let name = agent_manager::registry::normalize_display_name(args.name.as_deref().unwrap_or(""))
         .map_err(|error| refusal(ErrorCode::InvalidArgument, format!("name: {error}")))?;
-    let bytes = fresh_launch_bytes(reg, &dir, engine, model.as_deref(), &args.message);
+    let bytes = fresh_launch_bytes(
+        reg,
+        &dir,
+        engine,
+        model.as_deref(),
+        &args.message,
+        pmtui_bin,
+    );
     if bytes > tmux::LAUNCH_COMMAND_MAX_BYTES {
         return Err(refusal(
             ErrorCode::MessageTooLong,

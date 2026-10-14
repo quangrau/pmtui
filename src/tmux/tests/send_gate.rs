@@ -6,8 +6,7 @@ use super::*;
 use crate::tmux::activity::has_composer;
 use crate::tmux::activity::{PaneActivity, classify_pane};
 use crate::tmux::send_gate::{
-    SendBlocker, classify_pane_styled, claude_draft_in_box, feedback_survey, send_blocker,
-    unstyled,
+    SendBlocker, classify_pane_styled, claude_draft_in_box, feedback_survey, send_blocker, unstyled,
 };
 
 #[test]

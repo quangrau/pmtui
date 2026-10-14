@@ -50,3 +50,32 @@ fn codex_consult_omits_model_flag_when_unset() {
         "no -m when the model pin is unset (codex uses its default)"
     );
 }
+
+#[test]
+fn trae_consult_is_ephemeral_without_changing_codex_flags() {
+    let argv = build_supervisor_command_trae(
+        Some("trae-model"),
+        "SYS-PROMPT-MARKER",
+        "USER-PROMPT-MARKER",
+        "/tmp/trae-advice.last",
+        120,
+        7,
+    );
+
+    assert_eq!(&argv[0], "timeout");
+    assert!(argv.windows(3).any(|w| w == ["-k", "7", "120"]));
+    assert!(argv.contains(&"traex".to_string()));
+    assert!(argv.windows(2).any(|w| w == ["-s", "read-only"]));
+    assert!(
+        argv.windows(2)
+            .any(|w| w == ["--output-last-message", "/tmp/trae-advice.last"])
+    );
+    assert!(argv.contains(&"--ephemeral".to_string()));
+    assert!(argv.windows(2).any(|w| w == ["-m", "trae-model"]));
+    let dashdash = argv
+        .iter()
+        .position(|a| a == "--")
+        .expect("prompt is the trailing positional");
+    let tail = argv[dashdash + 1..].join(" ");
+    assert!(tail.contains("SYS-PROMPT-MARKER") && tail.contains("USER-PROMPT-MARKER"));
+}

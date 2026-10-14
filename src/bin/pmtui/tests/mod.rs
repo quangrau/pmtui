@@ -1477,6 +1477,7 @@ fn send_via_keys(app: &mut App, text: &str) {
 fn send_target(driven: bool) -> SendTarget {
     SendTarget {
         id: "bot".into(),
+        engine: None,
         root: PathBuf::from("/nonexistent"),
         session: "pmloop-bot".into(),
         agent_loop: true,

@@ -243,7 +243,14 @@ impl App {
                         Some(pane) => match driver
                             .capture_tail_styled(pane, ACTIVITY_CAPTURE_LINES)
                             .map(|styled| {
-                                (tmux::classify_pane_styled(&styled), tmux::unstyled(&styled))
+                                let cap = tmux::unstyled(&styled);
+                                let activity = match v.engine {
+                                    Some(Engine::Trae) => {
+                                        tmux::classify_pane_for_engine(&cap, Engine::Trae)
+                                    }
+                                    _ => tmux::classify_pane_styled(&styled),
+                                };
+                                (activity, cap)
                             }) {
                             Err(_) => merge_activity(
                                 hook_authoritative,
@@ -251,18 +258,19 @@ impl App {
                                 hook_working,
                                 ActivityObservation::Unreadable,
                             ),
-                            Ok((tmux::PaneActivity::Busy, _)) => {
-                                merge_activity(
-                                    hook_authoritative,
-                                    v.engine,
-                                    hook_working,
-                                    ActivityObservation::Busy,
-                                )
-                            }
+                            Ok((tmux::PaneActivity::Busy, _)) => merge_activity(
+                                hook_authoritative,
+                                v.engine,
+                                hook_working,
+                                ActivityObservation::Busy,
+                            ),
                             Ok((tmux::PaneActivity::Idle, cap)) => {
                                 let (fp, count) = idle_gate_step(
                                     prev_gate.get(&p.id).copied(),
-                                    tmux::idle_fingerprint(&cap),
+                                    v.engine.map_or_else(
+                                        || tmux::idle_fingerprint(&cap),
+                                        |engine| tmux::idle_fingerprint_for_engine(&cap, engine),
+                                    ),
                                 );
                                 new_gate.insert(p.id.clone(), (fp, count));
                                 merge_activity(
@@ -422,7 +430,13 @@ impl App {
                 let turn_signal = session_paths.turn_signal();
                 let env = self.managed_env(&id, &e.root);
                 self.pending_chat = Some(ChatReq {
-                    argv: build_chat(engine, &cid, worker_model.as_deref(), &turn_signal),
+                    argv: build_chat_with_pmtui_bin(
+                        engine,
+                        &cid,
+                        worker_model.as_deref(),
+                        &turn_signal,
+                        env.pmtui_bin.as_deref(),
+                    ),
                     session_paths,
                     // The REPL's cwd is the PROJECT ROOT (`e.root`), never the
                     // per-session state dir in `session_paths`.
