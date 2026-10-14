@@ -109,7 +109,15 @@ impl App {
             // registry seed — so a session pmtui already seeded resumes that same id
             // on a second Enter rather than minting a second conversation.
             let ledger = job::load(&session_paths).ok().flatten();
-            let ledger_cid = ledger.as_ref().and_then(|l| l.conversation_id.clone());
+            let trae_resume_unconfirmed =
+                engine == Engine::Trae && ledger.as_ref().is_some_and(|l| l.resume_unconfirmed);
+            let ledger_cid = ledger.as_ref().and_then(|l| {
+                if trae_resume_unconfirmed {
+                    None
+                } else {
+                    l.conversation_id.clone()
+                }
+            });
             let run_is_running = ledger
                 .as_ref()
                 .map(|l| matches!(l.run, job::JobRun::Running { .. }))
@@ -119,12 +127,16 @@ impl App {
             // wake adopts it — which is why a long-running codex session used to read as
             // never-woken and get a SECOND conversation on Enter.
             let captured = read_captured_conversation_id(&session_paths);
-            let effective = effective_id(
-                engine,
-                ledger_cid.as_deref(),
-                registry_cid.as_deref(),
-                captured.as_deref(),
-            );
+            let effective = if trae_resume_unconfirmed {
+                None
+            } else {
+                effective_id(
+                    engine,
+                    ledger_cid.as_deref(),
+                    registry_cid.as_deref(),
+                    captured.as_deref(),
+                )
+            };
             // A live unified terminal always wins over ledger routing. Enter only
             // attaches; tmux client detection makes pmd defer while the human is there.
             let loop_session = session_name(&id, &root);

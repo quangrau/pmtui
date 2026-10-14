@@ -653,9 +653,11 @@ stays visible. Only the claim that the product waits for a person goes away. A h
 the last driven state is not authority after the session leaves Autopilot; the live terminal is the newer
 source.
 
-For TRAE CLI, a resumed thread remains unconfirmed until the worker writes a marker or the hook writes
-the same thread id again after the resume launch. A stale prior hook write MUST NOT by itself confirm the
-resume.
+For TRAE CLI, a resumed thread remains unconfirmed until the worker writes a marker or the hook writes a
+thread id after the resume launch. If that hook id is different from the attempted resume id, the product
+MUST use the new hook id and MUST mark it confirmed. A stale prior hook write MUST NOT by itself confirm
+the resume. A dashboard Enter on a dead terminal MUST NOT repeat an unconfirmed TraeX resume; it MUST use
+the fresh-start path.
 
 A session that is idle at its prompt with an open decision still needs a person. A decision on a session
 that the supervisor does drive keeps its place.
