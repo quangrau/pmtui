@@ -19,6 +19,7 @@ mod real;
 mod send_gate;
 mod send_text;
 mod session_names;
+mod trae_activity;
 
 fn handle(dir: &Path, session: &str) -> StepHandle {
     StepHandle {
