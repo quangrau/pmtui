@@ -589,13 +589,18 @@ impl JobScheduler {
                     .as_ref()
                     .is_some_and(|prior| prior != &revision);
             if id_changed || confirmed_trae_resume {
+                let had_id = ledger.conversation_id.is_some();
                 if id_changed {
                     ledger.conversation_id = Some(id);
                 }
-                if confirmed_trae_resume {
+                if ledger.resume_unconfirmed {
                     ledger.resume_unconfirmed = false;
                 }
-                ledger.conversation_id_revision = Some(revision);
+                if confirmed_trae_resume || had_id {
+                    ledger.conversation_id_revision = Some(revision);
+                } else {
+                    ledger.conversation_id_revision = None;
+                }
                 ledger.updated_at = now;
                 control_changed = true;
             }

@@ -51,13 +51,6 @@ pub enum Resume {
     Continue(String),
 }
 
-/// Whether persistent interactive launches should install the turn-completion hook.
-/// Shared by pmd and pmtui so a Standard terminal can become Autopilot without
-/// changing its instrumentation.
-pub fn turn_hook_enabled() -> bool {
-    turn_hook_value_enabled(std::env::var("PM_TURN_HOOK").ok().as_deref())
-}
-
 pub fn turn_hook_enabled_for(engine: Engine) -> bool {
     turn_hook_value_enabled_for(engine, std::env::var("PM_TURN_HOOK").ok().as_deref())
 }

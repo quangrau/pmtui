@@ -305,6 +305,16 @@ fn build_chat_create_trae_uses_session_id_not_resume_or_headless() {
 
 #[test]
 fn build_chat_create_trae_omits_hooks_without_pmtui_bin() {
+    let resume =
+        build_chat_with_pmtui_bin(Engine::Trae, "trae-thread", None, test_turn_signal(), None);
+    assert!(
+        !resume.iter().any(|arg| arg.contains("hooks.Stop")
+            || arg.contains("hooks.SessionStart")
+            || arg.contains("PMTUI_BIN")),
+        "{resume:?}"
+    );
+    assert_eq!(&resume[resume.len() - 2..], ["resume", "trae-thread"]);
+
     let argv = build_chat_create_with_pmtui_bin(
         Engine::Trae,
         "new-trae-id",

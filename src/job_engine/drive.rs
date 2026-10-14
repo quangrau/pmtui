@@ -4,6 +4,8 @@
 //! bounds a pane which is Busy forever. One unit because it is one decision — may a
 //! nudge be typed right now — and every guard here exists to answer it `no` safely.
 
+use std::path::Path;
+
 use anyhow::Result;
 
 use crate::clock::Epoch;
@@ -743,18 +745,16 @@ impl JobScheduler {
         }
         let health = turn_signal_health(&self.paths.turn_signal(), base.report_generation);
         if self.engine == Engine::Trae
-            && self.pmtui_bin.is_none()
             && matches!(
                 health,
                 TurnSignalHealth::NeverFired { .. } | TurnSignalHealth::Partial { .. }
             )
+            && let Some(reason) = trae_blind_hook_reason(
+                crate::worker::turn_hook_runnable_for(self.engine, self.pmtui_bin.as_deref()),
+                self.pmtui_bin.as_deref(),
+            )
         {
-            return Some(
-                "this TraeX session has no turn-end hook because no pmtui binary was available to \
-                 pmd (PMTUI_BIN was not set from a pmtui next to pmd), so pmd cannot learn the \
-                 resumable thread id or tell when turns end"
-                    .to_string(),
-            );
+            return Some(reason);
         }
         match health {
             TurnSignalHealth::NeverFired { reports } => Some(format!(
@@ -983,4 +983,23 @@ impl JobScheduler {
             reason,
         )?))
     }
+}
+
+pub(super) fn trae_blind_hook_reason(
+    hook_runnable: bool,
+    pmtui_bin: Option<&Path>,
+) -> Option<String> {
+    if hook_runnable {
+        return None;
+    }
+    Some(if pmtui_bin.is_none() {
+        "this TraeX session has no turn-end hook because no pmtui binary was available to \
+         pmd (PMTUI_BIN was not set from a pmtui next to pmd), so pmd cannot learn the \
+         resumable thread id or tell when turns end"
+            .to_string()
+    } else {
+        "this TraeX session has no turn-end hook because turn-end hooks are disabled \
+         (PM_TURN_HOOK=off), so pmd cannot learn the resumable thread id or tell when turns end"
+            .to_string()
+    })
 }

@@ -1161,6 +1161,41 @@ fn a_new_same_trae_thread_hook_confirms_a_resume_before_the_first_marker() {
 }
 
 #[test]
+fn a_different_trae_thread_hook_confirms_the_resume_fallback_thread() {
+    const FALLBACK_THREAD: &str = "01a133c3-b12f-7033-ae77-38f3294fb68e";
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let sess = loop_session(&fx);
+
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    assert_eq!(
+        launched_flag(&fx, &sess, "resume").as_deref(),
+        Some(TRAE_THREAD)
+    );
+    assert!(ledger(&fx).resume_unconfirmed);
+
+    // TraeX can answer a failed resume by opening a new thread, or the person can run `/new`.
+    // Either way, a hook-reported id is engine proof of what the next relaunch must use.
+    trae_hook_reported(&fx, FALLBACK_THREAD);
+    fx.driver.set_alive(&sess, false);
+    fx.clock.set(START + LAUNCH_GRACE_S);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
+    let argv = launched_argv(&fx, &sess).expect("TraeX relaunched");
+    assert!(
+        argv.windows(2)
+            .any(|pair| pair == ["resume", FALLBACK_THREAD]),
+        "a hook-reported replacement thread must be resumed: {argv:?}"
+    );
+    let persisted = ledger(&fx);
+    assert_eq!(persisted.conversation_id.as_deref(), Some(FALLBACK_THREAD));
+    assert!(
+        !persisted.resume_unconfirmed,
+        "any hook-reported TraeX thread confirms the next resume target"
+    );
+}
+
+#[test]
 fn ensure_session_confirms_a_new_same_trae_thread_hook_before_launch() {
     let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
     trae_hook_reported(&fx, TRAE_THREAD);
