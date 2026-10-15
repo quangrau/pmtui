@@ -77,7 +77,7 @@ fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
     assert_eq!(
         merge_activity(
             false,
-            Some(Engine::Claude),
+            Some(Engine::Trae),
             Some(true),
             ActivityObservation::IdleConfirmed
         ),

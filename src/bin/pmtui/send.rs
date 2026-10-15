@@ -186,7 +186,7 @@ pub(crate) fn send_decision(t: &SendTarget, p: &SendProbe) -> SendPlan {
 /// prompt check so its clearer reason wins; `has_composer_in_tail` refuses a dialog anyway.
 pub(crate) fn pane_refusal(engine: Option<Engine>, styled: &str) -> Option<&'static str> {
     let cap = tmux::unstyled(styled);
-    if tmux::classify_dialog(&cap).is_some() {
+    if tmux::classify_dialog_for_engine(&cap, engine).is_some() {
         return Some("dialog up — press Enter and answer it there");
     }
     match tmux::send_blocker(&cap) {
@@ -199,7 +199,7 @@ pub(crate) fn pane_refusal(engine: Option<Engine>, styled: &str) -> Option<&'sta
         None => {}
     }
     let has_composer = match engine {
-        Some(Engine::Trae) => tmux::has_composer_for_engine(&cap, Engine::Trae),
+        Some(Engine::Trae) => tmux::has_composer_for_engine(&cap, engine),
         _ => tmux::has_composer_in_tail(&cap, SEND_GATE_LINES),
     };
     if !has_composer {
