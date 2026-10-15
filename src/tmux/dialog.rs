@@ -3,6 +3,8 @@
 //! current state. This module never answers one; the driver must actively prove a
 //! delegable menu reacts to navigation before any submit key is sent.
 
+use crate::registry::Engine;
+
 /// Whether a recognised dialog is a positively identified goal-choice UI or must
 /// stay with the human.
 ///
@@ -186,11 +188,8 @@ pub(super) const DIALOG_MAX_QUESTION_GAP: usize = 4;
 ///
 /// PHRASE-ANCHORED EXCEPTIONS run afterwards, only on a window these rules have
 /// already declined: codex's **startup trust dialog**
-/// ([`classify_codex_trust_dialog`]), Claude's workspace trust dialog
-/// ([`classify_claude_trust_dialog`]), and TraeX's hook trust and sign-in prompts
-/// ([`classify_trae_hook_trust_dialog`], [`classify_trae_signin_dialog`]). Two clauses above
-/// reject the codex trust dialog — its `?` sits mid-line in a wrapped paragraph, and its footer is
-/// `Press enter to continue`, not
+/// ([`classify_codex_trust_dialog`]). Two clauses above reject the codex one — its `?` sits
+/// mid-line in a wrapped paragraph, and its footer is `Press enter to continue`, not
 /// `Esc to cancel` — and neither clause is widened to let it in, because "a mid-line
 /// `?` plus a bare press-enter footer" describes a large amount of ordinary prose and
 /// a false dialog escalates a session that is working fine. The exception matches that
@@ -198,6 +197,19 @@ pub(super) const DIALOG_MAX_QUESTION_GAP: usize = 4;
 /// but its options are plain labels, not the general numbered block.
 /// The exceptions therefore keep the general rules exactly as narrow as they were.
 pub fn classify_dialog(capture: &str) -> Option<PaneDialog> {
+    classify_dialog_inner(capture, false)
+}
+
+/// As [`classify_dialog`], with engine-owned dialog shapes that would be false positives on
+/// another engine's transcript. TraeX anchors are only authoritative when the row is TraeX.
+pub fn classify_dialog_for_engine(
+    capture: &str,
+    engine: impl Into<Option<Engine>>,
+) -> Option<PaneDialog> {
+    classify_dialog_inner(capture, engine.into() == Some(Engine::Trae))
+}
+
+fn classify_dialog_inner(capture: &str, trae: bool) -> Option<PaneDialog> {
     let non_empty: Vec<&str> = capture.lines().filter(|l| !l.trim().is_empty()).collect();
     let start = non_empty.len().saturating_sub(DIALOG_TAIL_LINES);
     let window = non_empty.get(start..)?;
@@ -255,8 +267,13 @@ pub fn classify_dialog(capture: &str) -> Option<PaneDialog> {
     }
     classify_codex_trust_dialog(window)
         .or_else(|| classify_claude_trust_dialog(window))
-        .or_else(|| classify_trae_hook_trust_dialog(window))
-        .or_else(|| classify_trae_signin_dialog(window))
+        .or_else(|| {
+            trae.then(|| {
+                classify_trae_hook_trust_dialog(window)
+                    .or_else(|| classify_trae_signin_dialog(window))
+            })
+            .flatten()
+        })
 }
 
 /// Content anchors that identify authority-changing prompts even if a future CLI
@@ -368,8 +385,6 @@ fn dialog_block_boundary(line: &str) -> bool {
     trimmed.is_empty()
         || lower.contains("esc to cancel")
         || lower.starts_with("press enter to")
-        // TraeX's footer, drawn with no blank row after the last option.
-        || lower.starts_with("enter confirm")
         || trimmed
             .chars()
             .all(|c| matches!(c, '─' | '━' | '═' | '-' | ' '))
@@ -567,7 +582,20 @@ fn collect_claude_trust_options(lines: &[&str], offset: usize) -> CollectedOptio
 /// outside the sandbox, so this only recognizes and escalates it; it never answers it.
 fn classify_trae_hook_trust_dialog(window: &[&str]) -> Option<PaneDialog> {
     classify_trae_anchored_dialog(window, TRAE_HOOK_TRUST_HEADING, |lines| {
-        lines.iter().map(|line| (*line).to_string()).collect()
+        lines
+            .iter()
+            .map(|line| {
+                if line
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("enter confirm")
+                {
+                    "Esc to cancel".to_string()
+                } else {
+                    (*line).to_string()
+                }
+            })
+            .collect()
     })
 }
 

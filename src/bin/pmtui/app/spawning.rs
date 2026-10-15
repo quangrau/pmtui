@@ -127,6 +127,7 @@ pub(crate) struct SpawnJob {
 pub(crate) struct SpawnChild {
     pub(crate) id: String,
     pub(crate) root: PathBuf,
+    pub(crate) engine: Engine,
 }
 
 /// Where a request is. [`App::step_spawns`] moves it by at most one phase per frame.
@@ -297,6 +298,7 @@ impl SpawnChild {
         Self {
             id: row.id.clone(),
             root: row.root.clone(),
+            engine: row.engine.unwrap_or(Engine::Claude),
         }
     }
 

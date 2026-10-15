@@ -22,9 +22,12 @@ mod supervisor;
 
 pub use launch::{
     PermissionMode, Resume, build_command, build_fork_command, build_job_command,
-    build_loop_command, build_standard_command, turn_hook_enabled_for, turn_hook_runnable_for,
+    build_loop_command, build_standard_command, turn_hook_enabled, turn_hook_enabled_for,
+    turn_hook_runnable_for,
 };
-pub use result::{EffectAuthority, EffectReversibility, EffectScope, StopDraft, StopEffect};
+pub use result::{
+    CompletionDigest, EffectAuthority, EffectReversibility, EffectScope, StopDraft, StopEffect,
+};
 pub use supervisor::{
     SUPERVISOR_BUDGET_USD_ENV, SUPERVISOR_CODEX_MODEL_ENV, SUPERVISOR_MODEL, SUPERVISOR_MODEL_ENV,
     SUPERVISOR_TRAE_MODEL_ENV, build_supervisor_command, build_supervisor_command_codex,

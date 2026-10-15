@@ -6,6 +6,7 @@ fn public_hook_switch_is_engine_specific_and_runnable_checks_trae_pmtui() {
     // Read the inherited value; mutating process-wide env would race other tests.
     let value = std::env::var("PM_TURN_HOOK").ok();
     let expected = !matches!(value.as_deref().map(str::trim), Some("off" | "0" | "false"));
+    assert_eq!(turn_hook_enabled(), expected);
     assert_eq!(turn_hook_enabled_for(Engine::Claude), expected);
     assert_eq!(turn_hook_enabled_for(Engine::Codex), expected);
     assert_eq!(turn_hook_enabled_for(Engine::Trae), expected);
