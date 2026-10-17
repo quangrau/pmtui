@@ -300,13 +300,16 @@ fn inspect_project_files(
         index,
         label,
         &WORKER_SKILL,
+        WORKER_SKILL.body,
         &paths.canonical_worker_skill_file(),
         checks,
     );
+    let spawn_skill_body = crate::skills::spawn_skill_text(expected_engine);
     inspect_skill(
         index,
         label,
         &SPAWN_SKILL,
+        spawn_skill_body.as_ref(),
         &paths.canonical_spawn_skill_file(),
         checks,
     );
@@ -347,13 +350,14 @@ fn inspect_skill(
     index: usize,
     label: &str,
     skill: &ShippedSkill,
+    expected_body: &str,
     path: &Path,
     checks: &mut Vec<Check>,
 ) {
     let id = format!("project.{index}.{}", skill.check);
     let noun = skill.noun;
     checks.push(match fs::read(path) {
-        Ok(data) if data == skill.body.as_bytes() => {
+        Ok(data) if data == expected_body.as_bytes() => {
             Check::pass(id, format!("{label} {noun} is current"))
         }
         Ok(_) => {

@@ -852,7 +852,7 @@ fn pmd_ships_the_spawn_skill_when_it_can_name_pmtui() {
         assert_eq!(fx.driver.launched().len(), 2, "{engine:?}: relaunched");
         assert_eq!(
             std::fs::read_to_string(fx.paths.canonical_spawn_skill_file()).unwrap(),
-            crate::skills::SPAWN_SKILL_MD,
+            crate::skills::spawn_skill_text(engine).as_ref(),
             "{engine:?}"
         );
         assert_eq!(
@@ -1226,6 +1226,29 @@ fn ensure_session_confirms_a_new_same_trae_thread_hook_before_launch() {
         persisted.conversation_id_revision.as_ref(),
         Some(&trae_reported_revision(&fx))
     );
+}
+
+#[test]
+fn ensure_session_resumes_a_confirmed_trae_thread_without_reopening_fallback() {
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    trae_hook_reported(&fx, TRAE_THREAD);
+    let revision = trae_reported_revision(&fx);
+    let mut base = ledger(&fx);
+    base.conversation_id = Some(TRAE_THREAD.into());
+    base.resume_unconfirmed = false;
+    base.conversation_id_revision = Some(revision.clone());
+    let sess = loop_session(&fx);
+
+    fx.sched.ensure_session(&fx.driver, START, &base).unwrap();
+
+    let argv = launched_argv(&fx, &sess).expect("TraeX relaunched");
+    assert!(argv.windows(2).any(|pair| pair == ["resume", TRAE_THREAD]));
+    let persisted = ledger(&fx);
+    assert!(
+        !persisted.resume_unconfirmed,
+        "a confirmed hook revision must not reopen TraeX's one-shot fallback"
+    );
+    assert_eq!(persisted.conversation_id_revision.as_ref(), Some(&revision));
 }
 
 #[test]

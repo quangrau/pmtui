@@ -8,7 +8,7 @@
 //! Driven against a COPY of the binary inside a temp directory, replaced by `rename` exactly as
 //! `install.sh` does it. Nothing outside that directory is touched.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,30 @@ fn wait_for_text(path: &Path, needle: &str, budget: Duration) -> String {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn loaded_executable(pid: u32) -> Option<PathBuf> {
+    let output = Command::new("lsof")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let _command = fields.next()?;
+            let _pid = fields.next()?;
+            let _user = fields.next()?;
+            let fd = fields.next()?;
+            let _kind = fields.next()?;
+            let _device = fields.next()?;
+            let _size = fields.next()?;
+            let _node = fields.next()?;
+            let name = fields.next()?;
+            (fd == "txt" && name.ends_with("/pmd")).then(|| PathBuf::from(name))
+        })
+        .next()
 }
 
 #[test]
@@ -79,6 +103,14 @@ fn a_live_pmd_restarts_itself_onto_a_new_build() {
     let staged = dir.path().join("pmd.staged");
     copy_exe(Path::new(env!("CARGO_BIN_EXE_pmd")), &staged);
     std::fs::rename(&staged, &exe).expect("replace the binary");
+    if let Some(loaded) = loaded_executable(pid).filter(|loaded| loaded != &exe) {
+        // The test sandbox may execute a copied image under `.sandbox_exec/` while pmd still logs
+        // the launch path. Replacing both paths keeps this acceptance about live re-exec instead of
+        // the runner's executable materialization.
+        let staged_loaded = loaded.with_extension("staged");
+        copy_exe(Path::new(env!("CARGO_BIN_EXE_pmd")), &staged_loaded);
+        let _ = std::fs::rename(&staged_loaded, &loaded);
+    }
 
     let said = wait_for_text(&log, "restarting", Duration::from_secs(20));
 
