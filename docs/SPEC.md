@@ -298,9 +298,13 @@ time. The engines give no way to ask for a final result, so time is all that a s
 
 ### The Spawn Procedure
 
-Each launch that names the dashboard program first installs the spawn procedure into the project directory
-of the session. It installs the procedure in the form that the engine of the worker can find. A launch
-that names no dashboard program installs nothing, because the command in the procedure could not run.
+Each managed sweep that names the dashboard program installs or refreshes the spawn procedure in the
+project directory of the session. It installs the procedure in the form that the engine of the worker can
+find. A sweep that names no dashboard program installs nothing, because the command in the procedure could
+not run.
+The shared procedure is engine-neutral. A TraeX form adds a provider-specific routing instruction: requests
+to delegate work, spawn a worker, create a subagent, or use a general-purpose agent must use the
+`pmtui-spawn` skill and `pmtui spawn`, not TraeX native subagents.
 
 The procedure tells the worker to:
 

@@ -39,9 +39,14 @@ pub const CLAUDE_WORKER_SKILL_LINK_REL_PATH: &str = ".claude/skills/agent-manage
 pub const CLAUDE_WORKER_SKILL_LINK_TARGET: &str = "../../.agents/skills/agent-manager-worker";
 
 /// The procedure an agent inside a managed session follows to hand independent work to a new
-/// Standard session through `"$PMTUI_BIN" spawn`. Shipped by the process that launches the
-/// terminal, only when that launch names pmtui ([`install_spawn_skill_for_launch`]).
+/// Standard session through `"$PMTUI_BIN" spawn`. Shipped only when pmd can name pmtui
+/// ([`install_spawn_skill_for_launch`]), so the command in the procedure is runnable.
 pub const SPAWN_SKILL_MD: &str = include_str!("../skills/pmtui-spawn/SKILL.md");
+
+const TRAE_SPAWN_SKILL_APPENDIX: &str = "\n\n## TraeX Delegation Routing\n\nWhen you need to \
+delegate work, spawn a worker, create a subagent, or use a general-purpose agent, use the \
+`pmtui-spawn` skill and the `pmtui spawn` command. Do not use TraeX native subagents for \
+harness-managed work.\n";
 
 /// The spawn skill's name, and its directory under `.agents/skills/` and `.claude/skills/`.
 pub const SPAWN_SKILL_NAME: &str = "pmtui-spawn";
@@ -186,12 +191,21 @@ pub fn install_worker_skill(paths: &ProjectPaths, engine: Engine) -> anyhow::Res
 /// ensure its exact `.claude/skills/pmtui-spawn` alias. NEVER creates or modifies the user's
 /// `AGENTS.md`, and never touches the worker skill or any sibling skill.
 pub fn install_spawn_skill(paths: &ProjectPaths, engine: Engine) -> anyhow::Result<()> {
+    let body;
+    let skill = if engine == Engine::Trae {
+        // TraeX needs provider-specific vocabulary to route "subagent" requests through pmtui,
+        // while Claude/Codex must keep the shared skill's prompt surface byte-stable.
+        body = format!("{SPAWN_SKILL_MD}{TRAE_SPAWN_SKILL_APPENDIX}");
+        body.as_str()
+    } else {
+        SPAWN_SKILL_MD
+    };
     install_skill(
         paths,
         engine,
         SPAWN_SKILL_NAME,
         SPAWN_SKILL_REL_PATH,
-        SPAWN_SKILL_MD,
+        skill,
     )
 }
 
@@ -224,11 +238,11 @@ fn install_skill(
     Ok(())
 }
 
-/// The shared pre-launch installer for the spawn skill: install it into `root` for a terminal about
-/// to start with `env`, but only when `env` names pmtui (`PMTUI_BIN`). The skill's command runs
-/// `"$PMTUI_BIN"`, so a launch without it gets nothing and returns `Ok(())`.
+/// The shared installer for the spawn skill: install it into `root` for a managed terminal with
+/// `env`, but only when `env` names pmtui (`PMTUI_BIN`). The skill's command runs `"$PMTUI_BIN"`,
+/// so a session without it gets nothing and returns `Ok(())`.
 ///
-/// Callers treat a failure as non-fatal: the launch proceeds, and `pmd doctor` reports the
+/// Callers treat a failure as non-fatal: the session proceeds, and `pmd doctor` reports the
 /// missing or stale skill.
 pub fn install_spawn_skill_for_launch(
     root: &Path,
