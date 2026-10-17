@@ -42,6 +42,10 @@ fn spawn_skill_body_names_the_command_request_id_and_every_state() {
         s.contains("\ndescription: "),
         "has a description for auto-invocation"
     );
+    assert!(
+        !s.contains("subagent") && !s.contains("engine-native"),
+        "the shared skill stays provider-neutral; engine-specific routing belongs at install time"
+    );
 
     // Step 3: one generated request id, then the exact command with that id.
     assert!(s.contains("id=$(cat /proc/sys/kernel/random/uuid"));
@@ -280,15 +284,21 @@ fn codex_install_writes_only_the_canonical_body() {
 }
 
 #[test]
-fn trae_install_writes_only_the_canonical_body() {
+fn trae_install_writes_the_canonical_body_with_its_routing_instruction() {
     let dir = tempfile::tempdir().unwrap();
     let paths = ProjectPaths::for_session(dir.path(), "bot");
 
     install_spawn_skill(&paths, Engine::Trae).unwrap();
 
-    assert_eq!(
-        fs::read_to_string(paths.canonical_spawn_skill_file()).unwrap(),
-        SPAWN_SKILL_MD
+    let body = fs::read_to_string(paths.canonical_spawn_skill_file()).unwrap();
+    assert!(body.starts_with(SPAWN_SKILL_MD));
+    assert!(
+        body.contains("Do not use TraeX native subagents"),
+        "TraeX gets the provider-specific routing instruction"
+    );
+    assert!(
+        body.contains("pmtui spawn"),
+        "the TraeX instruction names the harness command it must use"
     );
     assert!(
         !paths.claude_root_dir().exists(),
@@ -322,6 +332,23 @@ fn install_refreshes_a_stale_body_and_leaves_the_worker_skill_alone() {
     assert_eq!(
         fs::read_link(paths.claude_project_skill_dir()).unwrap(),
         PathBuf::from(CLAUDE_WORKER_SKILL_LINK_TARGET)
+    );
+}
+
+#[test]
+fn installing_trae_refreshes_a_neutral_spawn_skill_with_the_trae_instruction() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ProjectPaths::for_session(dir.path(), "bot");
+    fs::create_dir_all(paths.canonical_spawn_skill_file().parent().unwrap()).unwrap();
+    fs::write(paths.canonical_spawn_skill_file(), SPAWN_SKILL_MD).unwrap();
+
+    install_spawn_skill(&paths, Engine::Trae).unwrap();
+
+    let body = fs::read_to_string(paths.canonical_spawn_skill_file()).unwrap();
+    assert!(body.starts_with(SPAWN_SKILL_MD));
+    assert!(
+        body.contains("Do not use TraeX native subagents"),
+        "a running TraeX session must refresh stale shared text into the Trae-specific form"
     );
 }
 

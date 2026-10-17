@@ -60,12 +60,13 @@ impl JobScheduler {
         if !alive || !self.worker_skill_installed {
             self.install_worker_skill();
         }
+        // Refresh the delegated-worker procedure before the alive early return. Existing TraeX
+        // panes keep running across pmd upgrades, so launch-time-only installation leaves them
+        // with stale skill metadata and lets engine-native subagents win skill selection.
+        self.install_spawn_skill();
         if alive {
             return Ok(EnsureOutcome::AlreadyUp);
         }
-        // The spawn skill ships only with a terminal pmd itself starts, and only when that
-        // terminal names pmtui (`PMTUI_BIN`): an adopted pane keeps its launcher's environment.
-        self.install_spawn_skill();
         // Resolve (and, for a first-time claude session with no id, mint+pin) the
         // conversation id, persisting any mint/adopt onto the ledger below. The
         // returned [`Resume`] distinguishes a fresh mint (CREATE via `--session-id`)
@@ -170,8 +171,8 @@ impl JobScheduler {
         }
     }
 
-    /// Ship the pmtui-spawn skill with the terminal about to launch when pmd names pmtui in it.
-    /// Best effort: a failure is logged and never blocks the launch; `pmd doctor` reports the
+    /// Ship or refresh the pmtui-spawn skill when pmd can name pmtui in the managed environment.
+    /// Best effort: a failure is logged and never blocks the session; `pmd doctor` reports the
     /// missing or stale skill. NEVER creates/modifies the user's `AGENTS.md`.
     fn install_spawn_skill(&self) {
         if let Err(error) = crate::skills::install_spawn_skill_for_launch(

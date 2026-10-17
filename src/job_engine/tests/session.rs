@@ -832,7 +832,7 @@ fn worker_skill_lands_on_first_adoption_of_an_already_up_pane() {
 }
 
 #[test]
-fn pmd_ships_the_spawn_skill_only_with_a_launch_that_names_pmtui() {
+fn pmd_ships_the_spawn_skill_when_it_can_name_pmtui() {
     for engine in [Engine::Claude, Engine::Codex, Engine::Trae] {
         // No pmtui beside pmd: the terminal gets no PMTUI_BIN, so no spawn skill either.
         let mut fx = setup(Tier::Standard, engine, Some(300));
@@ -865,21 +865,30 @@ fn pmd_ships_the_spawn_skill_only_with_a_launch_that_names_pmtui() {
 }
 
 #[test]
-fn pmd_never_ships_the_spawn_skill_into_a_pane_it_only_adopts() {
-    // A pane pmd did not launch carries whatever environment its launcher gave it; pmd ships the
-    // skill only with a terminal it starts itself (and names pmtui in).
-    let mut fx = setup(Tier::Autopilot, Engine::Claude, Some(300));
+fn pmd_refreshes_the_spawn_skill_for_an_already_up_pane() {
+    // An already-running TraeX pane snapshots project skills at startup, but the on-disk skill must
+    // still be refreshed so the next wake or relaunch sees the current pmtui-owned procedure.
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
     let sess = loop_session(&fx);
     fx.sched.set_pmtui_bin(Some(PathBuf::from("/opt/am/pmtui")));
     fx.driver.set_alive(&sess, true);
     fx.driver.set_tail(&sess, IDLE_PANE);
+    std::fs::create_dir_all(fx.paths.canonical_spawn_skill_file().parent().unwrap()).unwrap();
+    std::fs::write(fx.paths.canonical_spawn_skill_file(), "older spawn skill").unwrap();
+
     fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+
     assert!(fx.driver.launched().is_empty());
     assert!(
         fx.sched.worker_skill_available(),
         "the worker skill still lands"
     );
-    assert!(!fx.paths.canonical_spawn_skill_file().exists());
+    let body = std::fs::read_to_string(fx.paths.canonical_spawn_skill_file()).unwrap();
+    assert!(body.starts_with(crate::skills::SPAWN_SKILL_MD));
+    assert!(
+        body.contains("Do not use TraeX native subagents"),
+        "pmd refreshes the Trae-specific procedure even when it did not relaunch the pane"
+    );
 }
 
 #[test]
