@@ -22,7 +22,8 @@ const HANDOFF_TRIES: u32 = 2;
 #[cfg(not(test))]
 const FORCE_TRIES: u32 = 60;
 #[cfg(test)]
-const FORCE_TRIES: u32 = 2;
+// A helper process must get scheduled after SIGTERM before its file lock drops.
+const FORCE_TRIES: u32 = 20;
 const HANDOFF_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

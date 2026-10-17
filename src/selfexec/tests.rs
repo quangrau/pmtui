@@ -75,6 +75,52 @@ fn the_running_executable_is_a_real_file() {
 }
 
 #[test]
+fn an_absolute_launch_path_is_the_file_to_watch() {
+    let dir = tempfile::tempdir().unwrap();
+    let launched = dir.path().join("pmd");
+    let sandbox_copy = dir.path().join("sandbox/pmd");
+    std::fs::create_dir_all(sandbox_copy.parent().unwrap()).unwrap();
+    std::fs::write(&launched, "installed build").unwrap();
+    std::fs::write(&sandbox_copy, "sandbox copy").unwrap();
+
+    assert_eq!(
+        executable_to_watch(Some(launched.as_os_str()), sandbox_copy),
+        launched
+    );
+}
+
+#[test]
+fn an_unwatchable_launch_path_falls_back_to_the_kernel_exe() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel_exe = dir.path().join("sandbox/pmd");
+    std::fs::create_dir_all(kernel_exe.parent().unwrap()).unwrap();
+    std::fs::write(&kernel_exe, "sandbox copy").unwrap();
+
+    assert_eq!(
+        executable_to_watch(Some(Path::new("pmd").as_os_str()), kernel_exe.clone()),
+        kernel_exe
+    );
+}
+
+#[test]
+fn a_sandbox_materialized_launch_path_maps_back_to_the_real_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("pmd");
+    let sandbox = dir
+        .path()
+        .join(".sboxcache/run/.sandbox_exec")
+        .join(real.strip_prefix("/").unwrap());
+    std::fs::create_dir_all(sandbox.parent().unwrap()).unwrap();
+    std::fs::write(&real, "installed build").unwrap();
+    std::fs::write(&sandbox, "sandbox copy").unwrap();
+
+    assert_eq!(
+        executable_to_watch(Some(sandbox.as_os_str()), sandbox.clone()),
+        real
+    );
+}
+
+#[test]
 fn becoming_a_file_that_cannot_be_executed_reports_rather_than_exits() {
     // `relaunch` returns ONLY on failure, so this is the only side of it a test may touch: a
     // successful exec here would replace the test runner. The caller's contract is that it gets an
