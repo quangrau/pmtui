@@ -4,6 +4,7 @@
 //! natively into the session root's canonical `.agents/skills` directory, plus a Claude per-skill
 //! symlink; decider: appended to the consult system prompt).
 
+use std::borrow::Cow;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +48,16 @@ const TRAE_SPAWN_SKILL_APPENDIX: &str = "\n\n## TraeX Delegation Routing\n\nWhen
 delegate work, spawn a worker, create a subagent, or use a general-purpose agent, use the \
 `pmtui-spawn` skill and the `pmtui spawn` command. Do not use TraeX native subagents for \
 harness-managed work.\n";
+
+pub fn spawn_skill_text(engine: Engine) -> Cow<'static, str> {
+    if engine == Engine::Trae {
+        // TraeX needs provider-specific vocabulary to route "subagent" requests through pmtui,
+        // while Claude/Codex must keep the shared skill's prompt surface byte-stable.
+        Cow::Owned(format!("{SPAWN_SKILL_MD}{TRAE_SPAWN_SKILL_APPENDIX}"))
+    } else {
+        Cow::Borrowed(SPAWN_SKILL_MD)
+    }
+}
 
 /// The spawn skill's name, and its directory under `.agents/skills/` and `.claude/skills/`.
 pub const SPAWN_SKILL_NAME: &str = "pmtui-spawn";
@@ -191,21 +202,13 @@ pub fn install_worker_skill(paths: &ProjectPaths, engine: Engine) -> anyhow::Res
 /// ensure its exact `.claude/skills/pmtui-spawn` alias. NEVER creates or modifies the user's
 /// `AGENTS.md`, and never touches the worker skill or any sibling skill.
 pub fn install_spawn_skill(paths: &ProjectPaths, engine: Engine) -> anyhow::Result<()> {
-    let body;
-    let skill = if engine == Engine::Trae {
-        // TraeX needs provider-specific vocabulary to route "subagent" requests through pmtui,
-        // while Claude/Codex must keep the shared skill's prompt surface byte-stable.
-        body = format!("{SPAWN_SKILL_MD}{TRAE_SPAWN_SKILL_APPENDIX}");
-        body.as_str()
-    } else {
-        SPAWN_SKILL_MD
-    };
+    let skill = spawn_skill_text(engine);
     install_skill(
         paths,
         engine,
         SPAWN_SKILL_NAME,
         SPAWN_SKILL_REL_PATH,
-        skill,
+        skill.as_ref(),
     )
 }
 

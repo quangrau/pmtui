@@ -253,6 +253,39 @@ fn s_refuses_a_claude_dialog_even_when_a_stray_prompt_is_visible() {
 }
 
 #[test]
+fn s_refuses_a_trae_dialog_before_checking_for_a_prompt() {
+    let pane = concat!(
+        "────\n",
+        "❯ Explain this codebase\n",
+        "────\n",
+        "  ? for shortcuts\n",
+        "Hooks need review\n",
+        "1 hook is new or changed.\n",
+        "Hooks can run outside the sandbox after you trust them.\n",
+        "❯ 1. Review hooks\n",
+        "  2. Trust all and continue\n",
+        "  3. Continue without trusting (hooks won't run)\n",
+        "enter confirm | esc go back\n",
+    );
+    assert!(tmux::classify_dialog_for_engine(pane, Engine::Trae).is_some());
+    assert!(!tmux::has_composer_for_engine(pane, Engine::Trae));
+
+    let mut target = send_target(true);
+    target.engine = Some(Engine::Trae);
+    assert_eq!(
+        send_decision(
+            &target,
+            &SendProbe {
+                alive: Some(true),
+                capture: Some(pane.into()),
+                ..Default::default()
+            }
+        ),
+        SendPlan::Refuse("dialog up — press Enter and answer it there".into())
+    );
+}
+
+#[test]
 fn s_refuses_a_pane_with_no_prompt_on_screen() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, pane, _, _) = send_app(dir.path(), "$ some shell output\n");

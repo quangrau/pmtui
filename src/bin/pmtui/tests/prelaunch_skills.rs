@@ -6,8 +6,8 @@
 use super::*;
 
 use agent_manager::skills::{
-    CLAUDE_SPAWN_SKILL_LINK_TARGET, CLAUDE_WORKER_SKILL_LINK_TARGET, SPAWN_SKILL_MD,
-    WORKER_SKILL_MD,
+    CLAUDE_SPAWN_SKILL_LINK_TARGET, CLAUDE_WORKER_SKILL_LINK_TARGET, WORKER_SKILL_MD,
+    spawn_skill_text,
 };
 
 const PMTUI: &str = "/opt/am/pmtui";
@@ -35,11 +35,12 @@ fn project_dir(dir: &Path) -> PathBuf {
 /// Assert the spawn skill is installed in `root` exactly as `engine` discovers it.
 fn assert_spawn_skill(root: &Path, engine: Engine) {
     let paths = ProjectPaths::new(root);
+    let expected = spawn_skill_text(engine);
     assert_eq!(
         std::fs::read_to_string(paths.canonical_spawn_skill_file())
             .ok()
             .as_deref(),
-        Some(SPAWN_SKILL_MD),
+        Some(expected.as_ref()),
         "{engine:?}: canonical spawn skill"
     );
     match engine {
@@ -51,7 +52,7 @@ fn assert_spawn_skill(root: &Path, engine: Engine) {
             );
             assert_eq!(
                 std::fs::read_to_string(paths.claude_spawn_skill_dir().join("SKILL.md")).unwrap(),
-                SPAWN_SKILL_MD
+                expected.as_ref()
             );
         }
         Engine::Codex | Engine::Trae => assert!(

@@ -699,7 +699,7 @@ fn supervisor_answers_from_the_goal_over_real_tmux() {
     sched_a.set_decider_binary_available(true);
     let advised = sweep_until(&mut sched_a, &driver, Duration::from_secs(90), || {
         std::fs::read_to_string(&typed)
-            .map(|s| s.contains("session supervisor"))
+            .map(|s| s.contains("the goal already vendors dprint"))
             .unwrap_or(false)
     });
     let typed_a = std::fs::read_to_string(&typed).unwrap_or_default();

@@ -131,4 +131,6 @@ if grep -R -n 'fn chat_session_name\|fn loop_session_name' src; then
   exit 1
 fi
 
+bash tests/use_daily_test.sh
+
 printf 'repository contract tests: ok\n'
