@@ -1381,6 +1381,7 @@ fn the_dashboard_action_runs_the_dashboard_and_reports_its_result() {
         registry: PathBuf::from("/tmp/r.json"),
         socket: "s".into(),
         help: false,
+        channel: None,
     };
     let mut seen = None;
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -1401,6 +1402,7 @@ fn the_dashboard_action_runs_the_dashboard_and_reports_its_result() {
         registry: PathBuf::from("/tmp/r.json"),
         socket: "s".into(),
         help: false,
+        channel: None,
     };
     let error = dispatch(
         Ok(Action::Dashboard(args)),

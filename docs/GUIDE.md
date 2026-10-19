@@ -317,6 +317,16 @@ The row answers a question a version number alone cannot. `(installed …)` appe
 installer's own record disagrees with the binary you are running, which is what happens when
 `~/.local/bin` points at a local build — the reason an update can look like it did nothing.
 
+To try the daily build from a checkout, build it and start the installed launcher from that checkout:
+
+```bash
+cargo build --locked
+pmtui --channel daily
+```
+
+This is one-shot. It runs `./target/debug/pmtui` for the same registry and socket, asks only that
+`pmd` to exit, and leaves project terminals running.
+
 Four different things can go wrong, and the row keeps them apart, because the fix for each is
 different:
 

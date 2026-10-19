@@ -61,6 +61,7 @@
 //! The command line is parsed into an [`Action`] before anything else happens, so `spawn`
 //! runs without terminal setup, the dashboard singleton, the registry, or tmux.
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -161,11 +162,29 @@ fn registry_path_for_home(home: Option<PathBuf>) -> PathBuf {
         .join(".config/pmd/registry.json")
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Args {
     registry: PathBuf,
     socket: String,
     help: bool,
+    channel: Option<Channel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Channel {
+    Daily,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DailyChannelPlan {
+    RunHere(Args),
+    Relaunch { exe: PathBuf, argv: Vec<OsString> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DailyChannelRuntime {
+    current_exe: PathBuf,
+    cwd: PathBuf,
 }
 
 fn parse_args_from(argv: &[String]) -> Result<Args> {
@@ -173,6 +192,7 @@ fn parse_args_from(argv: &[String]) -> Result<Args> {
         registry: default_registry_path(),
         socket: "pmd".to_string(),
         help: false,
+        channel: None,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -191,6 +211,14 @@ fn parse_args_from(argv: &[String]) -> Result<Args> {
                     .with_context(|| "--socket needs a value")?;
                 i += 2;
             }
+            "--channel" => {
+                let value = argv.get(i + 1).with_context(|| "--channel needs a value")?;
+                match value.as_str() {
+                    "daily" => out.channel = Some(Channel::Daily),
+                    _ => anyhow::bail!("--channel must be daily"),
+                }
+                i += 2;
+            }
             "-h" | "--help" => {
                 out.help = true;
                 i += 1;
@@ -199,6 +227,199 @@ fn parse_args_from(argv: &[String]) -> Result<Args> {
         }
     }
     Ok(out)
+}
+
+fn daily_channel_binary(root: &Path) -> PathBuf {
+    root.join("target/debug/pmtui")
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn dashboard_argv(args: &Args) -> Vec<OsString> {
+    vec![
+        "--registry".into(),
+        args.registry.as_os_str().into(),
+        "--socket".into(),
+        args.socket.clone().into(),
+    ]
+}
+
+fn plan_daily_channel(args: &Args, current_exe: &Path, cwd: &Path) -> Result<DailyChannelPlan> {
+    let exe = daily_channel_binary(cwd);
+    if !is_executable_file(&exe) {
+        anyhow::bail!(
+            "daily channel needs an executable local build at {}",
+            exe.display()
+        );
+    }
+    if agent_manager::selfexec::identity(current_exe) == agent_manager::selfexec::identity(&exe) {
+        let mut here = args.clone();
+        here.channel = None;
+        return Ok(DailyChannelPlan::RunHere(here));
+    }
+    Ok(DailyChannelPlan::Relaunch {
+        exe,
+        argv: dashboard_argv(args),
+    })
+}
+
+fn request_daemon_stop_for_channel(
+    registry: &Path,
+    socket: &str,
+    tries: u32,
+    wait: Duration,
+) -> Result<()> {
+    let lock = lease::daemon_lock_path(registry, socket);
+    if lease::try_acquire(&lock)
+        .context("check whether pmd is already stopped")?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let stop = lease::daemon_stop_path(registry, socket);
+    if let Some(parent) = stop.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    // pmd owns the stop contract; the marker lets it exit between sweeps without touching terminals.
+    state::write_text_atomic(&stop, &format!("{}\n", std::process::id()))
+        .with_context(|| format!("write {}", stop.display()))?;
+    for _ in 0..tries {
+        if lease::try_acquire(&lock)
+            .context("wait for pmd to stop")?
+            .is_some()
+        {
+            return Ok(());
+        }
+        std::thread::sleep(wait);
+    }
+    anyhow::bail!("pmd did not stop after daily channel request");
+}
+
+fn request_daemon_stop_for_daily_channel(registry: &Path, socket: &str) -> Result<()> {
+    request_daemon_stop_for_channel(registry, socket, 100, Duration::from_millis(50))
+}
+
+fn exec_dashboard(exe: &Path, argv: &[OsString]) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    std::process::Command::new(exe).args(argv).exec()
+}
+
+fn exec_dashboard_result(exe: &Path, argv: &[OsString]) -> Result<()> {
+    let error = exec_dashboard(exe, argv);
+    Err(error).with_context(|| format!("exec {}", exe.display()))
+}
+
+fn execute_daily_channel_plan(
+    args: Args,
+    plan: DailyChannelPlan,
+    dashboard: &mut dyn FnMut(&mut App) -> Result<()>,
+    confirm: &mut dyn FnMut(&str) -> Result<bool>,
+    force: &mut ForceTakeover<'_>,
+    request_stop: &mut dyn FnMut(&Path, &str) -> Result<()>,
+    exec: &mut dyn FnMut(&Path, &[OsString]) -> Result<()>,
+) -> Result<()> {
+    match plan {
+        DailyChannelPlan::RunHere(args) => start_app_with_takeover(args, dashboard, confirm, force),
+        DailyChannelPlan::Relaunch { exe, argv } => {
+            request_stop(&args.registry, &args.socket)?;
+            eprintln!("pmtui: channel daily -> {}", exe.display());
+            exec(&exe, &argv)
+        }
+    }
+}
+
+fn start_daily_channel(
+    args: Args,
+    dashboard: &mut dyn FnMut(&mut App) -> Result<()>,
+    confirm: &mut dyn FnMut(&str) -> Result<bool>,
+    force: &mut ForceTakeover<'_>,
+    runtime: &DailyChannelRuntime,
+    request_stop: &mut dyn FnMut(&Path, &str) -> Result<()>,
+    exec: &mut dyn FnMut(&Path, &[OsString]) -> Result<()>,
+) -> Result<()> {
+    let plan = plan_daily_channel(&args, &runtime.current_exe, &runtime.cwd)?;
+    execute_daily_channel_plan(args, plan, dashboard, confirm, force, request_stop, exec)
+}
+
+fn daily_channel_runtime() -> Result<DailyChannelRuntime> {
+    #[cfg(test)]
+    if let Some(runtime) = DAILY_CHANNEL_RUNTIME.with(|runtime| runtime.borrow().clone()) {
+        return Ok(runtime);
+    }
+    Ok(DailyChannelRuntime {
+        current_exe: agent_manager::selfexec::current_exe(),
+        cwd: std::env::current_dir().context("resolve current directory for daily channel")?,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static DAILY_CHANNEL_RUNTIME: std::cell::RefCell<Option<DailyChannelRuntime>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct DailyChannelRuntimeGuard;
+
+#[cfg(test)]
+impl Drop for DailyChannelRuntimeGuard {
+    fn drop(&mut self) {
+        DAILY_CHANNEL_RUNTIME.with(|runtime| {
+            *runtime.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+fn set_daily_channel_runtime_for_test(
+    current_exe: PathBuf,
+    cwd: PathBuf,
+) -> DailyChannelRuntimeGuard {
+    DAILY_CHANNEL_RUNTIME.with(|runtime| {
+        assert!(
+            runtime.borrow().is_none(),
+            "daily channel runtime override is already installed"
+        );
+        *runtime.borrow_mut() = Some(DailyChannelRuntime { current_exe, cwd });
+    });
+    DailyChannelRuntimeGuard
+}
+
+fn start_daily_channel_real(
+    args: Args,
+    dashboard: &mut dyn FnMut(&mut App) -> Result<()>,
+    confirm: &mut dyn FnMut(&str) -> Result<bool>,
+    force: &mut ForceTakeover<'_>,
+) -> Result<()> {
+    let runtime = daily_channel_runtime()?;
+    let mut request_stop = request_daemon_stop_for_daily_channel;
+    let mut exec = exec_dashboard_result;
+    start_daily_channel(
+        args,
+        dashboard,
+        confirm,
+        force,
+        &runtime,
+        &mut request_stop,
+        &mut exec,
+    )
 }
 
 /// What one `pmtui` command line asks for.
@@ -249,11 +470,12 @@ fn parse_action(argv: &[String]) -> std::result::Result<Action, spawn_cli::Usage
 
 const HELP: &str = concat!(
     "pmtui — agent-manager dashboard\n\n",
-    "Usage: pmtui [--registry <path>] [--socket <name>]\n",
+    "Usage: pmtui [--registry <path>] [--socket <name>] [--channel daily]\n",
     "       pmtui spawn --message <text> [options]\n",
     "       pmtui hook <turn-complete|session-start>\n\n",
     "--registry <path>  registry JSON (default: ~/.config/pmd/registry.json)\n",
     "--socket <name>    private tmux server socket (default: pmd)\n",
+    "--channel daily    run the local daily build from ./target/debug/pmtui\n",
     "spawn              from inside a managed session, ask the dashboard for a Standard child\n",
     "                   session (see `pmtui spawn --help`)\n",
 );
@@ -754,6 +976,9 @@ fn start_app_with_takeover(
     if args.help {
         print_help(&mut std::io::stderr());
         return Ok(());
+    }
+    if args.channel == Some(Channel::Daily) {
+        return start_daily_channel_real(args, dashboard, confirm, force);
     }
     let registry = args.registry;
     let socket = args.socket;

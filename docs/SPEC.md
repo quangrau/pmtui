@@ -548,6 +548,11 @@ that installs.
   one running. That disagreement is why an update appears to do nothing on a machine whose binaries
   point at a local build.
 - A build that no installer placed MUST say so, and MUST NOT report a check that failed.
+- A person MAY start a local daily build with `--channel daily`. This is a one-shot channel
+  selection, not a saved preference. It resolves the daily build from the current checkout,
+  stops only the driver for the selected registry and socket, waits for that driver to release
+  its lock, and then runs the daily dashboard with the same registry and socket. It MUST NOT
+  stop project terminals.
 - The installer takes the terminal for an update, as an editor does.
 - A REPLACED BINARY IS NO USE TO A LOADED PROCESS. After an update the dashboard restarts itself on
   the new build, keeping the registry and socket it was given. A restart MUST NOT disturb a project

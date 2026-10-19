@@ -62,6 +62,7 @@ source-only builds are all flags on the same script — see
 
 ```bash
 pmtui          # open the dashboard
+pmtui --channel daily  # run this checkout's target/debug/pmtui once
 pmd            # run the driver (optional; it is what drives autopilot rows)
 pmd doctor     # inspect setup and state, changing nothing
 ```

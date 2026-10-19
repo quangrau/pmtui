@@ -110,7 +110,7 @@ print_processes() {
 
 print_start_command() {
   printf 'start local daily:\n'
-  printf '  %q --registry %q --socket %q\n' "$ROOT/target/debug/pmtui" "$REGISTRY" "$SOCKET"
+  printf '  pmtui --channel daily --registry %q --socket %q\n' "$REGISTRY" "$SOCKET"
 }
 
 cargo_command() {
