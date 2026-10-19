@@ -51,8 +51,8 @@ pub use real::{LAUNCH_COMMAND_MAX_BYTES, TmuxDriver, launch_command};
 // root with a shell metacharacter can't malform the hook command.
 pub(crate) use real::shq;
 pub use send_gate::{
-    SendBlocker, classify_pane_styled, claude_draft_in_box, feedback_survey, send_blocker,
-    styled_activity, unstyled,
+    SendBlocker, classify_pane_styled, classify_pane_styled_in_tail, claude_draft_in_box,
+    feedback_survey, send_blocker, styled_activity, unstyled,
 };
 pub use send_text::sanitize_send_text;
 pub use session_names::{job_session_name, session_name, supervisor_session_name};

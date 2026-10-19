@@ -582,16 +582,18 @@ impl JobScheduler {
                 marker::reported_identity_revision(&self.paths.codex_conversation_id())
         {
             let id_changed = ledger.conversation_id.as_deref() != Some(id.as_str());
-            // A different id in an unchanged hook file is still pre-launch evidence. First
-            // discovery has no baseline; after that, only a new write can confirm a resume.
+            let live_engine = driver.is_alive(&self.loop_session()).unwrap_or(false);
             let fresh_identity = ledger
                 .conversation_id_revision
                 .as_ref()
-                .is_none_or(|prior| prior != &revision);
+                .is_some_and(|prior| prior != &revision);
             let confirmed_trae_resume = ledger.resume_unconfirmed
                 && ledger.conversation_id_revision.is_some()
                 && fresh_identity;
-            if fresh_identity && (id_changed || confirmed_trae_resume) {
+            let first_live_identity = live_engine
+                && ledger.conversation_id_revision.is_none()
+                && (id_changed || ledger.resume_unconfirmed);
+            if first_live_identity || (fresh_identity && (id_changed || confirmed_trae_resume)) {
                 ledger.conversation_id = Some(id);
                 ledger.resume_unconfirmed = false;
                 ledger.conversation_id_revision = Some(revision);

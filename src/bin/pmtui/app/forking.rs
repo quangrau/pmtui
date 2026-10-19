@@ -145,13 +145,6 @@ impl App {
             }
         };
         let engine = match (ledger.as_ref().map(|state| state.engine), source.engine) {
-            (Some(ledger), Some(registry)) if ledger != registry => {
-                self.status = format!(
-                    "{}: ledger engine {ledger:?} disagrees with registry {registry:?}",
-                    source.id
-                );
-                return;
-            }
             (Some(engine), _) | (None, Some(engine)) => engine,
             (None, None) => Engine::Claude,
         };

@@ -13,7 +13,7 @@
 use ratatui::style::{Color, Modifier, Style};
 
 use super::activity::{
-    PaneActivity, classify_with, claude_box, is_box_top_rule, is_prompt_row, is_spinner_glyph,
+    PaneActivity, classify_with_tail, claude_box, is_box_top_rule, is_prompt_row, is_spinner_glyph,
 };
 
 /// A pane state that draws Claude's input box but must not receive a typed Message.
@@ -123,11 +123,18 @@ fn is_transcript_entry(line: &str) -> bool {
 /// and it accepts a box whatever it holds, so a dialog drawn inside a box must never reach the
 /// draft check as a prompt.
 pub fn classify_pane_styled(styled: &str) -> PaneActivity {
+    classify_pane_styled_in_tail(styled, super::activity::PANE_TAIL_LINES)
+}
+
+/// Like [`classify_pane_styled`], but uses the caller's captured tail length for the prompt
+/// search. The `s` key captures a wider pane tail because Claude can draw a tall footer below the
+/// input box; its receipt must classify the same observation that made the send safe.
+pub fn classify_pane_styled_in_tail(styled: &str, tail_lines: usize) -> PaneActivity {
     let plain = unstyled(styled);
     if super::dialog::classify_dialog(&plain).is_some() || send_blocker(&plain).is_some() {
         return PaneActivity::Busy;
     }
-    match classify_with(&plain, is_prompt_row) {
+    match classify_with_tail(&plain, tail_lines, is_prompt_row) {
         PaneActivity::Idle if claude_draft_in_box(styled) => PaneActivity::Busy,
         activity => activity,
     }

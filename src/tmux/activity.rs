@@ -91,15 +91,20 @@ pub(super) fn classify_with(
     capture: &str,
     prompt_row: impl Fn(&[&str], usize) -> bool,
 ) -> PaneActivity {
+    classify_with_tail(capture, PANE_TAIL_LINES, prompt_row)
+}
+
+pub(super) fn classify_with_tail(
+    capture: &str,
+    tail_lines: usize,
+    prompt_row: impl Fn(&[&str], usize) -> bool,
+) -> PaneActivity {
     let non_empty: Vec<&str> = capture.lines().filter(|l| !l.trim().is_empty()).collect();
     // No content at all ⇒ we cannot confirm an idle prompt ⇒ stay conservative.
     if non_empty.is_empty() {
         return PaneActivity::Busy;
     }
-    if classify_dialog_for_engine(capture, None).is_some() {
-        return PaneActivity::Busy;
-    }
-    let start = non_empty.len().saturating_sub(PANE_TAIL_LINES);
+    let start = non_empty.len().saturating_sub(tail_lines);
     let window = &non_empty[start..];
     // (1) Busy FIRST: the prompt is on screen mid-response too, so these are the
     // only signals that separate "generating" from "waiting". Never reorder.
@@ -199,29 +204,37 @@ pub fn has_composer(capture: &str) -> bool {
 /// [`classify_dialog`](super::classify_dialog), and `job_engine`'s `park_dialog`, which exists
 /// because "typing a choice into a live agent is the riskiest action in the system").
 pub fn has_composer_in_tail(capture: &str, tail_lines: usize) -> bool {
-    has_composer_in_tail_for_engine(capture, tail_lines, Engine::Claude)
+    has_composer_with(capture, tail_lines, Engine::Claude)
 }
 
 /// Engine-aware composer detection. TraeX is the only engine where a recognized
 /// blocking dialog must veto a visible input box.
 pub fn has_composer_for_engine(capture: &str, engine: impl Into<Option<Engine>>) -> bool {
     let engine = engine.into().unwrap_or(Engine::Claude);
+    has_composer_for_engine_in_tail(capture, PANE_TAIL_LINES, engine)
+}
+
+/// Engine-aware composer detection over an explicit captured tail.
+pub fn has_composer_for_engine_in_tail(capture: &str, tail_lines: usize, engine: Engine) -> bool {
     if engine == Engine::Trae && classify_dialog_for_engine(capture, engine).is_some() {
         return false;
     }
-    has_composer_in_tail_for_engine(capture, PANE_TAIL_LINES, engine)
+    has_composer_with(capture, tail_lines, engine)
 }
 
-fn has_composer_in_tail_for_engine(capture: &str, tail_lines: usize, engine: Engine) -> bool {
+fn has_composer_with(capture: &str, tail_lines: usize, engine: Engine) -> bool {
     let non_empty: Vec<&str> = capture.lines().filter(|l| !l.trim().is_empty()).collect();
     if non_empty.is_empty() {
         return false;
     }
-    if classify_dialog_for_engine(capture, engine).is_some() {
-        return false;
-    }
     let start = non_empty.len().saturating_sub(tail_lines);
-    (start..non_empty.len()).any(|at| is_composer_at_for_engine(&non_empty, at, engine))
+    (start..non_empty.len()).any(|at| {
+        if engine == Engine::Claude {
+            is_prompt_row(&non_empty, at)
+        } else {
+            is_composer_at_for_engine(&non_empty, at, engine)
+        }
+    })
 }
 
 /// A content fingerprint of the TRANSCRIPT REGION of an Idle-classified capture — the

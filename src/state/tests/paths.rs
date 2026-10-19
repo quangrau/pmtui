@@ -90,6 +90,24 @@ fn paths_can_be_recovered_from_a_managed_state_dir() {
 }
 
 #[test]
+fn state_dir_recovery_accepts_relative_project_and_session_layouts() {
+    let root = ProjectPaths::from_state_dir("proj/.project-state").unwrap();
+    assert_eq!(root.root, std::path::PathBuf::from("proj"));
+    assert_eq!(
+        root.state_dir(),
+        std::path::PathBuf::from("proj/.project-state")
+    );
+
+    let session =
+        ProjectPaths::from_state_dir("proj/.project-state/sessions/worker-a-1234").unwrap();
+    assert_eq!(session.root, std::path::PathBuf::from("proj"));
+    assert_eq!(
+        session.state_dir(),
+        std::path::PathBuf::from("proj/.project-state/sessions/worker-a-1234")
+    );
+}
+
+#[test]
 fn state_dir_recovery_rejects_incomplete_or_unrelated_layouts() {
     // A malformed hook path must not redirect identity writes into an unrelated project.
     for path in [
@@ -103,6 +121,8 @@ fn state_dir_recovery_rejects_incomplete_or_unrelated_layouts() {
         "/tmp/proj/not-state/sessions/session-id",
         "/tmp/proj/.project-state/session-id",
         "/tmp/proj/.project-state/sessions/session-id/.daemon",
+        "/tmp/proj/.project-state/not-sessions/session-id",
+        "/tmp/proj/not-state/sessions/session-id",
     ] {
         assert!(
             ProjectPaths::from_state_dir(path).is_none(),

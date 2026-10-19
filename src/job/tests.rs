@@ -48,6 +48,7 @@ fn agent_loop_state_round_trips_full_and_minimal() {
         // An adopted-but-unproven seed: the round-trip must preserve the fallback gate
         // across a save, or a relaunch after a daemon restart would resume a ghost id.
         resume_unconfirmed: true,
+        conversation_id_revision: None,
         engine: Engine::Codex,
         cadence_s: Some(300),
         // PINNED, so the round-trip covers the flag too: a ledger that forgot it across a save
@@ -83,6 +84,7 @@ fn agent_loop_state_round_trips_full_and_minimal() {
         }),
         decider_latched: true,
         decider_latch_reason: Some("transport unavailable".into()),
+        decider_health_selection: None,
         decider_runs: Vec::new(),
         turn_seq: 0,
         turn_trace: Vec::new(),

@@ -18,7 +18,7 @@ use agent_manager::spawn::{
 use agent_manager::tmux::LaunchOutcome;
 use agent_manager::worktree;
 
-use super::create::{NewSession, fresh_standard_argv, reserve_new_session};
+use super::create::{NewSession, fresh_standard_argv_with_pmtui_bin, reserve_new_session};
 use super::spawning::{
     ChildTerminal, PlanRefusal, READINESS_AFTER_FIRST_MS, READINESS_CAPTURE_LINES,
     READINESS_GAP_MS, READINESS_WINDOW_MS, SpawnChild, SpawnJob, SpawnPhase, job_worktree,
@@ -171,7 +171,7 @@ impl App {
                 );
             }
         };
-        let plan = match plan_child(&reg, &job.request) {
+        let plan = match plan_child(&reg, &job.request, self.pmtui_bin.as_deref()) {
             Ok(plan) => plan,
             Err(PlanRefusal::Refused(refusal)) => {
                 return self.fail(job, refusal.code, refusal.message);
@@ -454,7 +454,8 @@ impl App {
         // launch, so a dashboard that stops at any later point leaves a row that names it.
         let engine = row.engine.unwrap_or(Engine::Claude);
         let conversation = job_engine::mint_uuid_v4();
-        let pinned = (engine != Engine::Codex).then(|| conversation.clone());
+        let pinned =
+            (!matches!(engine, Engine::Codex | Engine::Trae)).then(|| conversation.clone());
         if let Err(error) = self.update_child(job, &child, Some(LaunchState::Pending), |entry| {
             set_launch_state(entry, LaunchState::Attempted);
             if pinned.is_some() {
@@ -479,15 +480,16 @@ impl App {
             self.launch_job_step(&row, &paths, engine, &session, &conversation)
         } else {
             // A CHAT child, as v1 staged: the persistent interactive agent a human talks to.
-            let argv = fresh_standard_argv(
+            let env = self.managed_env(&row.id, &row.root);
+            let argv = fresh_standard_argv_with_pmtui_bin(
                 engine,
                 &conversation,
                 row.worker_model.as_deref(),
                 &paths.turn_signal(),
                 row.initial_prompt.as_deref(),
+                env.pmtui_bin.as_deref(),
             );
-            let env = self.managed_env(&row.id, &row.root);
-            crate::session::install_spawn_skill(&row.root, engine, &env);
+            crate::session::install_prelaunch_skills(&row.root, engine, &env);
             self.agent_tmux
                 .launch_interactive(&session, &row.root, &argv, &env)
         };
@@ -688,7 +690,7 @@ impl App {
         deadline_ms: u128,
     ) -> SpawnPhase {
         let now = (self.spawn.now_ms)();
-        let first_ok_ms = match self.observe_child(&child.session()) {
+        let first_ok_ms = match self.observe_child(&child.session(), child.engine) {
             Err(error) => {
                 let message = format!("could not observe {}'s terminal ({error:#})", child.id);
                 return self.finish_unknown(job, &child, message);
@@ -736,14 +738,14 @@ impl App {
         }
     }
 
-    fn observe_child(&self, session: &str) -> Result<ChildTerminal> {
+    fn observe_child(&self, session: &str, engine: Engine) -> Result<ChildTerminal> {
         if !self.fork_terminal_running(session)? {
             return Ok(ChildTerminal::NotLive);
         }
         let capture = self
             .agent_tmux
             .capture_tail(session, READINESS_CAPTURE_LINES)?;
-        Ok(match tmux::classify_dialog(&capture) {
+        Ok(match tmux::classify_dialog_for_engine(&capture, engine) {
             Some(_) => ChildTerminal::Dialog,
             None => ChildTerminal::Live,
         })

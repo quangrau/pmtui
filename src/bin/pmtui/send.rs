@@ -168,7 +168,7 @@ pub(crate) fn send_decision(t: &SendTarget, p: &SendProbe) -> SendPlan {
     let cap = tmux::unstyled(styled);
     let activity = match t.engine {
         Some(Engine::Trae) => tmux::classify_pane_for_engine(&cap, Engine::Trae),
-        _ => tmux::classify_pane_styled(styled),
+        _ => tmux::classify_pane_styled_in_tail(styled, SEND_GATE_LINES),
     };
     if activity == tmux::PaneActivity::Busy {
         return SendPlan::Send(format!("sent → {} (it was working)", t.id));

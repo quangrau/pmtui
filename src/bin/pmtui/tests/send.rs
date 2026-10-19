@@ -32,6 +32,25 @@ const CLAUDE_SURVEY_PANE: &str = concat!(
     "────────────────────────────────\n",
 );
 
+const CLAUDE_USAGE_LIMIT_PANE: &str = concat!(
+    "● Done.\n",
+    "\n",
+    "⚠ Usage limit reached · continuing automatically at 5pm · esc to cancel\n",
+    "────────────────────────────────\n",
+    "❯\u{a0}\n",
+    "────────────────────────────────\n",
+);
+
+const TRAE_BUSY_COMPOSER_PANE: &str = concat!(
+    "▍ List the files in src/models with a one-line purpose each.\n",
+    "\n",
+    "◈ Any second now… (17s • ↓ 149 tokens • esc to interrupt)\n",
+    "──────────────────────────────────────────────── List src/models file purposes ─\n",
+    "❯ Explain this codebase\n",
+    "────────────────────────────────────────────────────────────────────────────────\n",
+    "  Test-O-New-Thinking high · Context 94% left · ~/Myspace/pmtui · ▧ Workspace Edit\n",
+);
+
 fn prompt_with_long_footer(prompt: &str, footer_lines: usize) -> String {
     let mut pane = format!("transcript above\n{prompt}\n");
     for i in 0..footer_lines {
@@ -98,6 +117,22 @@ fn s_refuses_a_pane_showing_claudes_survey() {
     assert!(pane.sends().is_empty(), "bytes reached the survey");
     assert!(
         app.status.contains("asking for feedback"),
+        "status: {:?}",
+        app.status
+    );
+}
+
+#[test]
+fn s_refuses_a_pane_showing_claudes_usage_limit() {
+    // A delayed turn parked behind a rate-limit banner would be reported as sent
+    // while it waits for an unrelated future reset.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, pane, _, _) = send_app(dir.path(), CLAUDE_USAGE_LIMIT_PANE);
+    send_via_keys(&mut app, "try after the reset");
+
+    assert!(pane.sends().is_empty(), "bytes reached the limit banner");
+    assert!(
+        app.status.contains("usage limit reached"),
         "status: {:?}",
         app.status
     );
@@ -889,6 +924,24 @@ fn a_working_pane_is_sent_to_and_the_receipt_says_so() {
             &SendProbe {
                 alive: Some(true),
                 capture: Some(busy.into()),
+                ..Default::default()
+            }
+        ),
+        SendPlan::Send("sent \u{2192} bot (it was working)".into())
+    );
+}
+
+#[test]
+fn a_working_trae_pane_uses_trae_activity_before_reporting_sent() {
+    let mut target = send_target(true);
+    target.engine = Some(Engine::Trae);
+
+    assert_eq!(
+        send_decision(
+            &target,
+            &SendProbe {
+                alive: Some(true),
+                capture: Some(TRAE_BUSY_COMPOSER_PANE.into()),
                 ..Default::default()
             }
         ),

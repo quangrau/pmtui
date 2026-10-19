@@ -296,24 +296,6 @@ fn the_styled_verdict_is_busy_on_a_dialog_even_inside_a_box() {
         "Esc to cancel\n",
     );
     assert!(crate::tmux::classify_dialog(&unstyled(dialog)).is_some());
-    assert_eq!(classify_pane_styled(dialog), PaneActivity::Busy);
-    assert_eq!(
-        classify_pane_styled(FIXTURE_CLAUDE_STYLED_HINT),
-        PaneActivity::Idle
-    );
-}
-
-#[test]
-fn the_styled_verdict_is_busy_on_a_dialog_even_inside_a_box() {
-    let dialog = concat!(
-        "────────────────────────────────\n",
-        "❯ \x1b[2mDo you want to proceed?\x1b[0m\n",
-        "  \x1b[2m1. Yes\x1b[0m\n",
-        "  \x1b[2m2. No\x1b[0m\n",
-        "────────────────────────────────\n",
-        "Esc to cancel\n",
-    );
-    assert!(crate::tmux::classify_dialog(&unstyled(dialog)).is_some());
     assert_eq!(
         classify_pane_styled(dialog),
         PaneActivity::Busy,

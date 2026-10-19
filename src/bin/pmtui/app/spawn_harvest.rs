@@ -328,11 +328,12 @@ impl App {
             self.record_status();
             return;
         }
-        // KEPT, and inert: its process is gone, so the row exists to be seen and cleared with `d`. A
-        // codex row also learns its thread id here — codex has no caller-chosen conversation id, so the
-        // only record of which conversation this run created is the one it announced in its own stream.
+        // KEPT, and inert: its process is gone, so the row exists to be seen and cleared with `d`.
+        // Codex and TraeX rows also learn their thread id here. Codex has no caller-chosen id; TraeX
+        // keeps pmtui's `--session-id` as a non-resumable name, so the engine stream is the only
+        // resumable conversation identity for both engines.
         // Without this the conversation of a job that failed, or asked for a person, dies with the row.
-        self.pin_codex_thread(row);
+        self.pin_reported_thread(row);
         self.disable_row(&row.id);
         self.status = format!(
             "{} \u{b7} {} \u{2014} {headline}",
@@ -342,14 +343,17 @@ impl App {
         self.record_status();
     }
 
-    /// Record the thread id a codex run announced, when its row does not already name a conversation.
+    /// Record the thread id a Codex or TraeX run announced, when its row does not already name a
+    /// conversation.
     ///
-    /// A no-op for claude (its id is minted before the launch and pinned then), for a row that already
-    /// has one, and for a run whose stream never said. Failing to write it is not worth failing a
-    /// harvest over: the outcome is already recorded, and this only decides whether a human can pick the
-    /// conversation up.
-    fn pin_codex_thread(&mut self, row: &ProjectEntry) {
-        if row.engine != Some(Engine::Codex) || row.conversation_id.is_some() {
+    /// A no-op for Claude (its id is minted before the launch and pinned then), for a row that
+    /// already has one, and for a run whose stream never said. Failing to write it is not worth
+    /// failing a harvest over: the outcome is already recorded, and this only decides whether a
+    /// human can pick the conversation up.
+    fn pin_reported_thread(&mut self, row: &ProjectEntry) {
+        if !matches!(row.engine, Some(Engine::Codex | Engine::Trae))
+            || row.conversation_id.is_some()
+        {
             return;
         }
         let log = std::fs::read_to_string(entry_state_paths(row).job_log()).unwrap_or_default();

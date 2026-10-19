@@ -126,7 +126,7 @@ fn task_board_colours_trae_engine_metadata_from_theme() {
     let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
     terminal.draw(|frame| render(frame, &app)).unwrap();
 
-    let styles = styles_under_row(&terminal, "traex · auto", "traex")
+    let styles = styles_under_row(&terminal, "traex · standard", "traex")
         .unwrap_or_else(|| panic!("missing TRAE metadata: {}", screen_text(&terminal)));
     assert!(
         styles
