@@ -74,7 +74,7 @@ fn daily_channel_relaunches_the_local_debug_binary_without_the_channel_flag() {
     .unwrap();
 
     assert_eq!(
-        plan_daily_channel(&args, &current, dir.path()).unwrap(),
+        plan_daily_channel(&args, &current, dir.path(), dir.path()).unwrap(),
         DailyChannelPlan::Relaunch {
             exe: daily,
             argv: vec![
@@ -96,7 +96,7 @@ fn daily_channel_runs_in_place_when_the_current_process_is_already_daily() {
     let args = parse_args_from(&strings(&["--channel", "daily"])).unwrap();
 
     assert_eq!(
-        plan_daily_channel(&args, &daily, dir.path()).unwrap(),
+        plan_daily_channel(&args, &daily, dir.path(), dir.path()).unwrap(),
         DailyChannelPlan::RunHere(Args {
             registry: default_registry_path(),
             socket: "pmd".into(),
@@ -114,7 +114,7 @@ fn daily_channel_requires_an_executable_local_build() {
     make_executable(&current);
     let args = parse_args_from(&strings(&["--channel", "daily"])).unwrap();
 
-    let error = plan_daily_channel(&args, &current, dir.path()).unwrap_err();
+    let error = plan_daily_channel(&args, &current, dir.path(), dir.path()).unwrap_err();
 
     assert!(
         error
@@ -127,7 +127,7 @@ fn daily_channel_requires_an_executable_local_build() {
     std::fs::create_dir_all(daily.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&daily).unwrap();
 
-    let error = plan_daily_channel(&args, &current, dir.path()).unwrap_err();
+    let error = plan_daily_channel(&args, &current, dir.path(), dir.path()).unwrap_err();
 
     assert!(
         error
@@ -139,13 +139,41 @@ fn daily_channel_requires_an_executable_local_build() {
     std::fs::remove_dir_all(&daily).unwrap();
     std::fs::write(&daily, "not executable").unwrap();
 
-    let error = plan_daily_channel(&args, &current, dir.path()).unwrap_err();
+    let error = plan_daily_channel(&args, &current, dir.path(), dir.path()).unwrap_err();
 
     assert!(
         error
             .to_string()
             .contains("daily channel needs an executable local build"),
         "{error:#}"
+    );
+}
+
+#[test]
+fn daily_channel_falls_back_to_the_launcher_build_root_outside_the_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = dir.path().join("checkout");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let daily = checkout.join("target/debug/pmtui");
+    std::fs::create_dir_all(daily.parent().unwrap()).unwrap();
+    make_executable(&daily);
+    let current = dir.path().join("installed/pmtui");
+    std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+    make_executable(&current);
+    let args = parse_args_from(&strings(&["--channel", "daily"])).unwrap();
+
+    assert_eq!(
+        plan_daily_channel(&args, &current, &outside, &checkout).unwrap(),
+        DailyChannelPlan::Relaunch {
+            exe: daily,
+            argv: vec![
+                "--registry".into(),
+                default_registry_path().into_os_string(),
+                "--socket".into(),
+                "pmd".into(),
+            ],
+        }
     );
 }
 
@@ -398,6 +426,7 @@ fn daily_channel_start_uses_the_injected_runtime() {
         &DailyChannelRuntime {
             current_exe: current,
             cwd: dir.path().to_path_buf(),
+            build_root: dir.path().to_path_buf(),
         },
         &mut |registry, socket| {
             stopped
@@ -436,7 +465,11 @@ fn daily_channel_startup_uses_the_real_startup_branch_when_the_selected_build_ma
     std::fs::create_dir_all(daily.parent().unwrap()).unwrap();
     let current = std::env::current_exe().unwrap();
     std::fs::hard_link(&current, &daily).unwrap();
-    let _runtime = set_daily_channel_runtime_for_test(current, dir.path().to_path_buf());
+    let _runtime = set_daily_channel_runtime_for_test(
+        current,
+        dir.path().to_path_buf(),
+        dir.path().to_path_buf(),
+    );
     let registry = dir.path().join("registry.json");
     let called = std::cell::Cell::new(false);
     let mut confirm = |_prompt: &str| panic!("a free dashboard lock must not prompt");

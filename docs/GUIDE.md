@@ -324,8 +324,9 @@ cargo build --locked
 pmtui --channel daily
 ```
 
-This is one-shot. It runs `./target/debug/pmtui` for the same registry and socket, asks only that
-`pmd` to exit, and leaves project terminals running.
+This is one-shot. It runs `target/debug/pmtui` from the current checkout, or from the checkout that
+built the installed launcher when you run the command elsewhere. It uses the same registry and
+socket, asks only that `pmd` to exit, and leaves project terminals running.
 
 Four different things can go wrong, and the row keeps them apart, because the fix for each is
 different:

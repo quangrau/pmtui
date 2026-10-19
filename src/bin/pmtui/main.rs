@@ -186,6 +186,7 @@ enum DailyChannelPlan {
 struct DailyChannelRuntime {
     current_exe: PathBuf,
     cwd: PathBuf,
+    build_root: PathBuf,
 }
 
 fn parse_args_from(argv: &[String]) -> Result<Args> {
@@ -261,14 +262,25 @@ fn dashboard_argv(args: &Args) -> Vec<OsString> {
     ]
 }
 
-fn plan_daily_channel(args: &Args, current_exe: &Path, cwd: &Path) -> Result<DailyChannelPlan> {
-    let exe = daily_channel_binary(cwd);
-    if !is_executable_file(&exe) {
-        anyhow::bail!(
-            "daily channel needs an executable local build at {}",
-            exe.display()
-        );
-    }
+fn plan_daily_channel(
+    args: &Args,
+    current_exe: &Path,
+    cwd: &Path,
+    build_root: &Path,
+) -> Result<DailyChannelPlan> {
+    let candidates = [cwd, build_root];
+    let exe = candidates
+        .iter()
+        .map(|root| daily_channel_binary(root))
+        .find(|candidate| is_executable_file(candidate))
+        .with_context(|| {
+            let checked = candidates
+                .iter()
+                .map(|root| daily_channel_binary(root).display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("daily channel needs an executable local build at one of: {checked}")
+        })?;
     if agent_manager::selfexec::identity(current_exe) == agent_manager::selfexec::identity(&exe) {
         let mut here = args.clone();
         here.channel = None;
@@ -355,7 +367,12 @@ fn start_daily_channel(
     request_stop: &mut dyn FnMut(&Path, &str) -> Result<()>,
     exec: &mut dyn FnMut(&Path, &[OsString]) -> Result<()>,
 ) -> Result<()> {
-    let plan = plan_daily_channel(&args, &runtime.current_exe, &runtime.cwd)?;
+    let plan = plan_daily_channel(
+        &args,
+        &runtime.current_exe,
+        &runtime.cwd,
+        &runtime.build_root,
+    )?;
     execute_daily_channel_plan(args, plan, dashboard, confirm, force, request_stop, exec)
 }
 
@@ -367,6 +384,7 @@ fn daily_channel_runtime() -> Result<DailyChannelRuntime> {
     Ok(DailyChannelRuntime {
         current_exe: agent_manager::selfexec::current_exe(),
         cwd: std::env::current_dir().context("resolve current directory for daily channel")?,
+        build_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
     })
 }
 
@@ -392,13 +410,18 @@ impl Drop for DailyChannelRuntimeGuard {
 fn set_daily_channel_runtime_for_test(
     current_exe: PathBuf,
     cwd: PathBuf,
+    build_root: PathBuf,
 ) -> DailyChannelRuntimeGuard {
     DAILY_CHANNEL_RUNTIME.with(|runtime| {
         assert!(
             runtime.borrow().is_none(),
             "daily channel runtime override is already installed"
         );
-        *runtime.borrow_mut() = Some(DailyChannelRuntime { current_exe, cwd });
+        *runtime.borrow_mut() = Some(DailyChannelRuntime {
+            current_exe,
+            cwd,
+            build_root,
+        });
     });
     DailyChannelRuntimeGuard
 }
@@ -483,7 +506,7 @@ const HELP: &str = concat!(
     "       pmtui hook <turn-complete|session-start>\n\n",
     "--registry <path>  registry JSON (default: ~/.config/pmd/registry.json)\n",
     "--socket <name>    private tmux server socket (default: pmd)\n",
-    "--channel daily    run the local daily build from ./target/debug/pmtui\n",
+    "--channel daily    run the local daily build from this or the launcher build checkout\n",
     "spawn              from inside a managed session, ask the dashboard for a Standard child\n",
     "                   session (see `pmtui spawn --help`)\n",
     "message            from inside a managed session, send one message to another session's\n",
