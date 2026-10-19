@@ -103,16 +103,18 @@ fn a_live_pmd_restarts_itself_onto_a_new_build() {
     let staged = dir.path().join("pmd.staged");
     copy_exe(Path::new(env!("CARGO_BIN_EXE_pmd")), &staged);
     std::fs::rename(&staged, &exe).expect("replace the binary");
-    if let Some(loaded) = loaded_executable(pid).filter(|loaded| loaded != &exe) {
-        // The test sandbox may execute a copied image under `.sandbox_exec/` while pmd still logs
-        // the launch path. Replacing both paths keeps this acceptance about live re-exec instead of
-        // the runner's executable materialization.
-        let staged_loaded = loaded.with_extension("staged");
-        copy_exe(Path::new(env!("CARGO_BIN_EXE_pmd")), &staged_loaded);
-        let _ = std::fs::rename(&staged_loaded, &loaded);
+    let mut said = wait_for_text(&log, "restarting", Duration::from_secs(5));
+    if !said.contains("restarting") {
+        if let Some(loaded) = loaded_executable(pid).filter(|loaded| loaded != &exe) {
+            // Some sandbox runners make the loaded image the only watchable path. Only touch that
+            // copy as a fallback: on macOS sandbox-exec, replacing the materialized `txt` file first
+            // can hide the launch-path replacement this test is trying to observe.
+            let staged_loaded = loaded.with_extension("staged");
+            copy_exe(Path::new(env!("CARGO_BIN_EXE_pmd")), &staged_loaded);
+            let _ = std::fs::rename(&staged_loaded, &loaded);
+        }
+        said = wait_for_text(&log, "restarting", Duration::from_secs(15));
     }
-
-    let said = wait_for_text(&log, "restarting", Duration::from_secs(20));
 
     // EXEC KEEPS THE PID, so "did it restart?" cannot be asked by watching for a new process — the
     // daemon's own line is the signal, and it is printed before the exec that replaces it.

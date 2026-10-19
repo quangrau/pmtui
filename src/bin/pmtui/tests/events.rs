@@ -1147,6 +1147,7 @@ fn startup_covers_help_singleton_lock_fault_and_dashboard_result_paths() {
         registry,
         socket: "pm-events".into(),
         help,
+        channel: None,
     };
 
     let calls = Cell::new(0);
@@ -1193,6 +1194,25 @@ fn startup_covers_help_singleton_lock_fault_and_dashboard_result_paths() {
     })
     .unwrap();
     assert_eq!(calls.get(), 2);
+
+    let themed_dir = dir.path().join("bad-theme");
+    std::fs::create_dir_all(&themed_dir).unwrap();
+    std::fs::write(
+        themed_dir.join("pmtui.json"),
+        r#"{"theme":"no-such-theme"}"#,
+    )
+    .unwrap();
+    start_app(args(themed_dir.join("registry.json"), false), &mut |app| {
+        calls.set(calls.get() + 1);
+        assert!(
+            app.status.contains("no-such-theme"),
+            "invalid stored theme should be reported: {}",
+            app.status
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(calls.get(), 3);
 
     wait_until_free(&lock_path);
     let error = start_app(args(registry, false), &mut |_| {

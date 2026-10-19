@@ -10,6 +10,7 @@ test_status_prints_local_daily_context() (
   printf '%s\n' "$out" | grep -Fq 'debug binaries:'
   printf '%s\n' "$out" | grep -Fq 'target/debug/pmtui'
   printf '%s\n' "$out" | grep -Fq 'start local daily:'
+  printf '%s\n' "$out" | grep -Fq 'pmtui --channel daily'
 )
 
 test_build_uses_locked_cargo_build() (
