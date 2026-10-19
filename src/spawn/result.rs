@@ -11,6 +11,7 @@
 //!   `--json-schema` puts our fields in its `structured_output`.
 //! - codex: `--output-schema` shapes the final message and `-o <path>` writes it to a file, with
 //!   `turn.completed` / `turn.failed` in the `--json` stream saying which way the turn went.
+//! - traex: `exec --json` follows the same terminator + last-message-file contract as codex.
 //!
 //! Two parse rules are borrowed from that same prior art: the LAST valid payload wins (a run that
 //! reported once and kept going must report its final outcome), and anything malformed is REJECTED
@@ -143,6 +144,7 @@ pub fn read_job_result(engine: Engine, log: &str, result_file: Option<&str>) -> 
     match engine {
         Engine::Claude => claude_result(log),
         Engine::Codex => codex_result(log, result_file),
+        Engine::Trae => trae_result(log, result_file),
     }
 }
 
@@ -165,6 +167,28 @@ fn claude_result(log: &str) -> Option<JobResult> {
         Some("success") => Some(JobResult::clamped(JobOutcome::Done, text, None)),
         // Every other subtype claude emits on a `result` event is a failure of the run
         // (`error_during_execution`, `error_max_turns`, …), so the outcome is stated, not inferred.
+        Some(other) => Some(JobResult::clamped(
+            JobOutcome::Failed,
+            if text.is_empty() { other } else { text },
+            None,
+        )),
+        None => None,
+    }
+}
+
+/// TraeX: current exec streams end with a turn terminator and the harness writes the model's
+/// schema to `job_last_message`; older v1-style logs carried the outcome in the LAST `type=result`.
+fn trae_result(log: &str, result_file: Option<&str>) -> Option<JobResult> {
+    codex_result(log, result_file).or_else(|| legacy_result_event(log))
+}
+
+fn legacy_result_event(log: &str) -> Option<JobResult> {
+    let last = json_lines(log)
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("result"))
+        .last()?;
+    let text = last.get("result").and_then(|r| r.as_str()).unwrap_or("");
+    match last.get("subtype").and_then(|s| s.as_str()) {
+        Some("success") => Some(JobResult::clamped(JobOutcome::Done, text, None)),
         Some(other) => Some(JobResult::clamped(
             JobOutcome::Failed,
             if text.is_empty() { other } else { text },
@@ -215,24 +239,34 @@ fn codex_result(log: &str, result_file: Option<&str>) -> Option<JobResult> {
     Some(JobResult::clamped(outcome, &text, None))
 }
 
-/// The thread id codex announced for this run, from the FIRST `thread.started` event in its stream.
+/// The thread id an engine announced for this run, from the FIRST `thread.started` event or the
+/// older TraeX `type=result` shape with `session_id`.
 ///
 /// codex has no caller-chosen conversation id — the one flag claude does have (`--session-id`) — so the
-/// only way to learn which conversation a run created is to read the id codex generated. A job exits, so
-/// it never resumes itself; this is what lets a HUMAN pick up the conversation of a job that failed or
-/// asked for them, instead of losing it with the process.
+/// only way to learn which conversation a run created is to read the id codex generated. TraeX has the
+/// same problem in practice: its caller-chosen `--session-id` is a name, not the resumable thread id.
+/// A job exits, so it never resumes itself; this is what lets a HUMAN pick up the conversation of a job
+/// that failed or asked for them, instead of losing it with the process.
 pub fn codex_thread_id(log: &str) -> Option<String> {
     json_lines(log)
-        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("thread.started"))
-        .find_map(|v| {
-            Some(
-                v.get("thread_id")
+        .filter_map(|v| {
+            let ty = v.get("type").and_then(|t| t.as_str())?;
+            match ty {
+                "thread.started" => v
+                    .get("thread_id")
                     .or_else(|| v.get("thread").and_then(|t| t.get("id")))?
-                    .as_str()?
-                    .to_string(),
-            )
+                    .as_str()
+                    .and_then(|id| crate::state::codex_identity::parse(id))
+                    .map(str::to_string),
+                "result" => v
+                    .get("session_id")
+                    .and_then(|id| id.as_str())
+                    .and_then(|id| crate::state::codex_identity::parse(id))
+                    .map(str::to_string),
+                _ => None,
+            }
         })
-        .filter(|id| !id.is_empty())
+        .next()
 }
 
 /// The text of the last completed `agent_message` item in a codex stream.

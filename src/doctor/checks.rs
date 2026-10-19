@@ -300,13 +300,16 @@ fn inspect_project_files(
         index,
         label,
         &WORKER_SKILL,
+        WORKER_SKILL.body,
         &paths.canonical_worker_skill_file(),
         checks,
     );
+    let spawn_skill_body = crate::skills::spawn_skill_text(expected_engine);
     inspect_skill(
         index,
         label,
         &SPAWN_SKILL,
+        spawn_skill_body.as_ref(),
         &paths.canonical_spawn_skill_file(),
         checks,
     );
@@ -347,13 +350,14 @@ fn inspect_skill(
     index: usize,
     label: &str,
     skill: &ShippedSkill,
+    expected_body: &str,
     path: &Path,
     checks: &mut Vec<Check>,
 ) {
     let id = format!("project.{index}.{}", skill.check);
     let noun = skill.noun;
     checks.push(match fs::read(path) {
-        Ok(data) if data == skill.body.as_bytes() => {
+        Ok(data) if data == expected_body.as_bytes() => {
             Check::pass(id, format!("{label} {noun} is current"))
         }
         Ok(_) => {
@@ -364,7 +368,7 @@ fn inspect_skill(
         }
         Err(error) => Check::fail(id, format!("{label} {noun} could not be read"))
             .with_detail(error.to_string())
-            .with_remediation("restore access to the project-local .agents skill directory"),
+            .with_remediation("restore access to the project-local skill directory"),
     });
 }
 
@@ -1000,19 +1004,41 @@ pub(super) fn tmux(
     });
 }
 
+/// Can a desktop escalation actually reach the human?
+///
+/// TWO FACTS, NOT ONE. The program being installed was reported as a PASS on its own, which is wrong in
+/// the case that matters: over SSH or in a container `notify-send` exists and every delivery fails with
+/// the D-Bus `ServiceUnknown` error. `escalation::transport` already knows that failure — it warns once
+/// and latches the transport off after three — so the doctor was the only part of the tool claiming
+/// escalations were fine while they silently went nowhere. And escalation is HOW a human learns a
+/// session is waiting for them, so a false pass there costs more than most.
 pub(super) fn notifications(probe: &dyn RuntimeProbe, checks: &mut Vec<Check>) {
-    checks.push(if probe.binary_on_path("notify-send") {
-        Check::pass(
+    if !probe.binary_on_path("notify-send") {
+        checks.push(
+            Check::warn(
+                "notification.notify-send",
+                "notify-send is not on PATH; ledger escalations still work",
+            )
+            .with_remediation(
+                "install notify-send only if desktop escalation notifications are desired",
+            ),
+        );
+        return;
+    }
+    checks.push(match probe.desktop_session() {
+        Some(named) => Check::pass(
             "notification.notify-send",
-            "notify-send is available (no notification was sent)",
-        )
-    } else {
-        Check::warn(
+            format!("notify-send is available and {named} names a session to deliver to (no notification was sent)"),
+        ),
+        None => Check::warn(
             "notification.notify-send",
-            "notify-send is not on PATH; ledger escalations still work",
+            "notify-send is installed but no desktop session is reachable \
+             (DBUS_SESSION_BUS_ADDRESS, WAYLAND_DISPLAY and DISPLAY are all unset), so every \
+             notification will fail; ledger escalations still work",
         )
         .with_remediation(
-            "install notify-send only if desktop escalation notifications are desired",
-        )
+            "read escalations in pmtui or the session ledger over SSH; desktop toasts need a \
+             logged-in desktop session",
+        ),
     });
 }

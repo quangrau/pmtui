@@ -12,6 +12,8 @@ use super::*;
 mod codex_identity;
 mod fork;
 mod job;
+mod launch_regressions;
+mod trae;
 
 #[test]
 fn turn_hook_kill_switch_parsing_is_shared_and_explicit() {
@@ -71,6 +73,28 @@ fn standard_persistent_commands_keep_human_posture_and_install_turn_hook() {
     assert!(
         !codex.iter().any(|arg| arg == "--sandbox"),
         "a Standard session keeps the host's sandbox posture: {codex:?}"
+    );
+
+    let trae = build_standard_command(
+        Engine::Trae,
+        &Resume::Continue("trae-session".into()),
+        Some(&signal),
+        None,
+    );
+    let config_at = trae.iter().position(|arg| arg == "-c").unwrap();
+    let resume_at = trae.iter().position(|arg| arg == "resume").unwrap();
+    assert!(config_at < resume_at, "{trae:?}");
+    assert!(
+        trae[config_at + 1].contains("hooks.Stop"),
+        "Standard TraeX should carry the same Stop hook for later Autopilot: {trae:?}"
+    );
+    assert!(
+        !trae.iter().any(|arg| arg == "--permission-mode"),
+        "a Standard TraeX session keeps human-controlled permissions: {trae:?}"
+    );
+    assert!(
+        !trae.iter().any(|arg| arg == "--sandbox"),
+        "a Standard TraeX session keeps the host sandbox posture: {trae:?}"
     );
 }
 

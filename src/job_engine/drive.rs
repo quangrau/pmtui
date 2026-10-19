@@ -4,6 +4,8 @@
 //! bounds a pane which is Busy forever. One unit because it is one decision — may a
 //! nudge be typed right now — and every guard here exists to answer it `no` safely.
 
+use std::path::Path;
+
 use anyhow::Result;
 
 use crate::clock::Epoch;
@@ -302,7 +304,7 @@ impl JobScheduler {
                 // to capture until the session is alive), and AFTER the marker disposer at
                 // 2.5, which keeps its precedence: the agent's own written
                 // self-assessment outranks anything we infer from pixels.
-                if let Some(dialog) = tmux::classify_dialog(&capture) {
+                if let Some(dialog) = tmux::classify_dialog_for_engine(&capture, self.engine) {
                     let policy_decision = crate::policy::decide_kind(
                         config.autonomy,
                         StopKind::Ambiguity,
@@ -376,7 +378,14 @@ impl JobScheduler {
                     );
                     return self.park_dialog(now, &audited, dialog);
                 }
-                match tmux::classify_pane(&capture) {
+                // The idle verdict reads a styled capture for Claude/Codex so it can tell a dim
+                // hint from a person's draft; TraeX uses measured placeholder text instead.
+                let activity = if self.engine == Engine::Trae {
+                    tmux::classify_pane_for_engine(&capture, self.engine)
+                } else {
+                    tmux::styled_activity(driver, &session, 40)
+                };
+                match activity {
                     PaneActivity::Idle => self.idle_observed(driver, now, base, &capture),
                     // Busy: re-check soon, consume nothing (no nudge, no budget, no answer)
                     // — but run the stall backstop so a Busy-forever pane can't hang
@@ -563,7 +572,7 @@ impl JobScheduler {
     }
 
     fn idle_confirmation_ready(&mut self, capture: &str) -> bool {
-        let fingerprint = tmux::idle_fingerprint(capture);
+        let fingerprint = tmux::idle_fingerprint_for_engine(capture, self.engine);
         if self.last_idle_fingerprint == Some(fingerprint) {
             self.idle_confirmations = self.idle_confirmations.saturating_add(1);
         } else {
@@ -652,7 +661,7 @@ impl JobScheduler {
         capture: &str,
         reason: HoldReason,
     ) -> Result<JobTick> {
-        let fingerprint = tmux::progress_fingerprint(capture);
+        let fingerprint = tmux::progress_fingerprint_for_engine(capture, self.engine);
         if self.busy_since.is_none() || self.last_busy_progress_fingerprint != Some(fingerprint) {
             self.busy_since = Some(now);
             self.last_busy_progress_fingerprint = Some(fingerprint);
@@ -739,7 +748,20 @@ impl JobScheduler {
         if self.engine == Engine::Codex {
             return None;
         }
-        match turn_signal_health(&self.paths.turn_signal(), base.report_generation) {
+        let health = turn_signal_health(&self.paths.turn_signal(), base.report_generation);
+        if self.engine == Engine::Trae
+            && matches!(
+                health,
+                TurnSignalHealth::NeverFired { .. } | TurnSignalHealth::Partial { .. }
+            )
+            && let Some(reason) = trae_blind_hook_reason(
+                crate::worker::turn_hook_runnable_for(self.engine, self.pmtui_bin.as_deref()),
+                self.pmtui_bin.as_deref(),
+            )
+        {
+            return Some(reason);
+        }
+        match health {
             TurnSignalHealth::NeverFired { reports } => Some(format!(
                 "this session's turn-end hook has never fired across {reports} reports, so pmd \
                  cannot tell when a turn ends and every check-in now waits the full \
@@ -966,4 +988,23 @@ impl JobScheduler {
             reason,
         )?))
     }
+}
+
+pub(super) fn trae_blind_hook_reason(
+    hook_runnable: bool,
+    pmtui_bin: Option<&Path>,
+) -> Option<String> {
+    if hook_runnable {
+        return None;
+    }
+    Some(if pmtui_bin.is_none() {
+        "this TraeX session has no turn-end hook because no pmtui binary was available to \
+         pmd (PMTUI_BIN was not set from a pmtui next to pmd), so pmd cannot learn the \
+         resumable thread id or tell when turns end"
+            .to_string()
+    } else {
+        "this TraeX session has no turn-end hook because turn-end hooks are disabled \
+         (PM_TURN_HOOK=off), so pmd cannot learn the resumable thread id or tell when turns end"
+            .to_string()
+    })
 }

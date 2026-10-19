@@ -2132,6 +2132,58 @@ fn the_claude_conversation_id_is_saved_with_the_attempt_before_the_launch() {
 }
 
 #[test]
+fn a_kept_trae_job_pins_the_thread_reported_by_exec_json() {
+    const THREAD: &str = "01a133c3-b12f-7033-ae77-38f3294fb68e";
+
+    let mut b = broker();
+    b.publish(
+        REQ,
+        SpawnArgs {
+            agent: Some(Engine::Trae),
+            ..args(MESSAGE)
+        },
+    );
+    b.settle();
+
+    let launches = b.pane.steps();
+    assert_eq!(launches.len(), 1);
+    let argv = &launches[0].2;
+    assert!(
+        argv.iter().any(|arg| arg == "--session-id"),
+        "TraeX exec still receives the launch name: {argv:?}"
+    );
+    assert_eq!(
+        b.row("service-2").unwrap().conversation_id,
+        None,
+        "the launch name is not resumable, so the row must wait for the reported thread"
+    );
+
+    let paths = ProjectPaths::for_session(&b.root, "service-2");
+    std::fs::write(
+        paths.job_log(),
+        format!(r#"{{"type":"thread.started","thread_id":"{THREAD}"}}"#)
+            + "\n"
+            + r#"{"type":"turn.completed"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        paths.job_last_message(),
+        r#"{"outcome":"needs_human","summary":"needs a person"}"#,
+    )
+    .unwrap();
+    std::fs::write(paths.job_done_signal(), "0").unwrap();
+
+    b.restart(FakePane::default());
+    b.step();
+    b.app.refresh();
+
+    let kept = b.row("service-2").expect("needs_human keeps the row");
+    assert!(!kept.enabled);
+    assert_eq!(kept.conversation_id.as_deref(), Some(THREAD));
+    assert_eq!(b.state(REQ), Some(ReceiptState::NeedsHuman));
+}
+
+#[test]
 fn an_ambiguous_claude_launch_keeps_its_conversation_id() {
     let mut b = broker_with(|inner, child| {
         inner.armed_launch_errors.get_mut().unwrap().insert(
@@ -2598,4 +2650,78 @@ fn a_staged_row_that_names_no_parent_is_not_the_brokers_to_finish() {
     let row = b.row("loose").expect("left as it is");
     assert!(row.is_staged_spawn());
     assert!(b.pane.steps().is_empty());
+}
+
+/// A ROW STAGED BY A PRE-JOB BUILD STILL LAUNCHES, as the INTERACTIVE child that build meant.
+///
+/// `LaunchKind` defaults to `Chat` on deserialization precisely so a row written before that field
+/// existed keeps its meaning — and nothing this build writes is ever `Chat`. So the whole
+/// interactive arm of the launch is an UPGRADE path: a dashboard replaced while a request sat staged
+/// comes back, reads a row with no `kind`, and must finish what the old build started rather than
+/// turn a human's interactive child into a one-shot job that exits.
+///
+/// It had no test. Splitting the 2,200-line broker into its three jobs is what made that visible:
+/// the arm's coverage had been averaged in with everything around it.
+#[test]
+fn a_row_staged_before_the_kind_field_launches_as_an_interactive_child() {
+    let mut b = broker();
+    b.publish(REQ, args(MESSAGE));
+    b.step(); // claim
+    b.step(); // stage
+
+    // Rewrite the staged row the way the older build left it: no `kind` at all. Going through the
+    // JSON rather than the typed row is the point — this is a compatibility claim about a FILE.
+    let raw = std::fs::read_to_string(&b.registry).unwrap();
+    let mut doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let rows = doc["projects"].as_array_mut().unwrap();
+    let staged = rows
+        .iter_mut()
+        .find(|row| row["id"] == "service-2")
+        .expect("the staged row");
+    staged["launch"]
+        .as_object_mut()
+        .expect("a launch record")
+        .remove("kind");
+    std::fs::write(&b.registry, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    assert_eq!(
+        b.row("service-2")
+            .and_then(|row| row.launch)
+            .map(|launch| launch.kind),
+        Some(agent_manager::registry::LaunchKind::Chat),
+        "an absent kind reads as the interactive child v1 created"
+    );
+
+    b.step(); // launch
+
+    // INTERACTIVE, not a step: `launch_interactive` is what a human can attach to and type into,
+    // and it is handed the managed environment a one-shot job is deliberately denied.
+    assert!(
+        b.pane.steps().is_empty(),
+        "an interactive child is not launched as a one-shot step"
+    );
+    let launches = b.pane.launches();
+    assert_eq!(launches.len(), 1, "exactly one interactive launch");
+    let (session, cwd, argv) = &launches[0];
+    assert_eq!(session, &b.child_session());
+    assert_eq!(cwd, &b.root.display().to_string());
+    assert!(
+        !argv.iter().any(|arg| arg == "-p"),
+        "an interactive child is not headless: {argv:?}"
+    );
+    assert!(
+        !argv
+            .iter()
+            .any(|arg| arg.contains("Nobody is at this terminal")),
+        "and is never given the job preamble, because somebody IS at this terminal: {argv:?}"
+    );
+    assert!(
+        !b.pane.launched_env().is_empty(),
+        "a chat child gets its managed environment; only a JOB is denied one"
+    );
+    assert_eq!(
+        b.row("service-2")
+            .and_then(|row| row.launch)
+            .map(|launch| launch.state),
+        Some(LaunchState::Started)
+    );
 }

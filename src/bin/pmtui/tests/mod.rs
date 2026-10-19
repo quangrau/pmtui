@@ -128,6 +128,8 @@ mod events;
 mod forking;
 mod goal;
 mod help;
+mod hook_regressions;
+mod input;
 mod keybar;
 mod keys;
 mod launch_env;
@@ -137,6 +139,7 @@ mod overlays;
 mod pane_dialog_answering;
 mod path_complete;
 mod pmd;
+mod prelaunch_skills;
 mod preview;
 mod rename;
 mod rows;
@@ -148,7 +151,7 @@ mod spawn_broker;
 mod spawn_cli;
 mod spawn_jobs;
 mod spawn_rows;
-mod spawn_skill;
+mod standard_turn_hook;
 mod status;
 mod status_log;
 mod stops;
@@ -511,6 +514,21 @@ impl Driver for FakePane {
         }
         if !self.0.skip_launch_alive {
             self.0.alive.lock().unwrap().insert(session.to_string());
+        }
+        if argv.iter().any(|arg| arg.contains("hooks.SessionStart"))
+            && let Some(identity) = self.0.codex_session_ids.get(session)
+        {
+            // Model the engine's startup event, so the fork must read its own file
+            // instead of borrowing the source identity from the fake process probe.
+            let payload = serde_json::json!({"session_id": identity}).to_string();
+            record_session_identity(
+                &|key| {
+                    (key == tmux::ENV_STATE_DIR)
+                        .then(|| env.state_dir.to_string_lossy().into_owned())
+                },
+                &payload,
+            )
+            .map_err(|error| tmux::LaunchError::Probe(error.to_string()))?;
         }
         Ok(tmux::LaunchOutcome::Started)
     }
@@ -1460,6 +1478,7 @@ fn send_via_keys(app: &mut App, text: &str) {
 fn send_target(driven: bool) -> SendTarget {
     SendTarget {
         id: "bot".into(),
+        engine: None,
         root: PathBuf::from("/nonexistent"),
         session: "pmloop-bot".into(),
         agent_loop: true,

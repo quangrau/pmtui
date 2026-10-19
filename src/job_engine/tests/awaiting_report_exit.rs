@@ -337,6 +337,41 @@ fn a_ceiling_reached_with_a_dead_turn_hook_blames_the_hook_not_the_agent() {
     );
 }
 
+#[test]
+fn a_trae_ceiling_without_pmtui_bin_names_the_unrecoverable_hook_cause() {
+    let mut fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    let sess = loop_session(&fx);
+    nudged_with_no_turn_hook(&mut fx, &sess);
+    with_reports(&fx, 20);
+
+    let stop = stop_at_ceiling(&mut fx, &sess, 300);
+
+    assert_eq!(stop.kind, StopKind::Capability);
+    let text = question(&stop);
+    assert!(
+        text.contains("no pmtui binary was available to pmd"),
+        "the stop must name the missing PMTUI_BIN cause: {text}"
+    );
+    assert!(
+        !text.contains("restart the session"),
+        "restart would relaunch TraeX without hooks again: {text}"
+    );
+}
+
+#[test]
+fn a_trae_ceiling_with_hooks_disabled_names_the_unrecoverable_hook_cause() {
+    let text = trae_blind_hook_reason(false, Some(Path::new("/opt/am/pmtui")))
+        .expect("disabled hooks are a known TraeX hook failure");
+    assert!(
+        text.contains("turn-end hooks are disabled"),
+        "the stop must name PM_TURN_HOOK=off as the cause: {text}"
+    );
+    assert!(
+        !text.contains("restart the session"),
+        "restart cannot override a disabled hook policy: {text}"
+    );
+}
+
 /// AN INTERMITTENT HOOK IS THE SAME FAULT, and the one actually measured in the wild: `turn-complete`
 /// advanced once across roughly seven accepted reports on a live session while its argv was correct.
 #[test]

@@ -173,17 +173,42 @@ impl JobScheduler {
             };
             return Ok(JobTick::Monitoring { until });
         }
+        // The last look before typing reads styles too, so a person's draft in the box is Busy.
+        //
+        // TWO CAPTURES, AND BOTH EARN THEIR KEEP. An audit called this a wasted round-trip — the plain
+        // capture is thrown away whenever the answer is Idle — and reordering it so the styled gate
+        // goes first does save one. It was tried and reverted: the saving is one `capture-pane` per
+        // nudge, and nudges run on a cadence of minutes, while the cost is a transient-error arm no
+        // test can reach (`drive` captured this same pane plainly moments ago, so a fake cannot make
+        // the second call fail without failing the first). The alternative — fingerprinting
+        // `unstyled()` of the styled capture — is worse: `pane_progress_recheck` compares that
+        // fingerprint with later PLAIN captures, and text rebuilt from a styled capture need not match
+        // byte for byte, so a spurious difference reads as progress and resets the stall clock that
+        // escalates a wedged session.
+        //
+        // This whole re-read exists because it happens INSIDE `input.lock`: the pane can change while
+        // this sender waits for the lock, which is the race the recheck above is also for.
         match driver.capture_tail(&session, 40) {
-            Ok(capture)
-                if crate::tmux::classify_pane(&capture) == crate::tmux::PaneActivity::Idle => {}
-            Ok(capture) => return self.busy_pane_recheck(now, base, &capture),
+            Ok(capture) => {
+                let activity = if self.engine == Engine::Trae {
+                    crate::tmux::classify_pane_for_engine(&capture, self.engine)
+                } else {
+                    crate::tmux::styled_activity(driver, &session, 40)
+                };
+                if activity != crate::tmux::PaneActivity::Idle {
+                    return self.busy_pane_recheck(now, base, &capture);
+                }
+            }
             Err(_) => return self.busy_recheck(now, base, HoldReason::Transient),
         }
         // The single seam that turns ledger + scheduler state into the nudge bytes: the goal on
         // disk, the agent's own `pending_context`/`last_status`/`last_plan`, and the WHITELISTED
         // "Since last wake" signal flags (elapsed bucket, answer-just-arrived, stale-plan streak).
         let text = self.compose_nudge(base, now, answer_arrived, marker_less_finish);
-        if driver.send_keys(&session, &text).is_err() {
+        if driver
+            .send_keys_for_engine(&session, &text, Some(self.engine))
+            .is_err()
+        {
             // Transient tmux error: route through `busy_recheck` (NOT a bare re-park) so a
             // PERSISTENTLY failing send escalates a human-dismissable Stuck at
             // `DEFAULT_STALL_BUSY_S` (~30min) instead of festering until only the 24h
@@ -288,6 +313,12 @@ impl JobScheduler {
         let last_status = base.last_status.clone().unwrap_or_default();
         let last_plan = base.last_plan.clone().unwrap_or_default();
         let since = self.since_last_wake(base, now, answer_arrived, marker_less_finish);
+        // Structural, like `worker_skill_available`: the spawn skill is installed best effort at
+        // launch, so the nudge names it only when the file is really there.
+        let spawn_skill = self
+            .work_dir
+            .join(crate::skills::SPAWN_SKILL_REL_PATH)
+            .is_file();
         loop_nudge_prompt_for_engine(
             LoopNudgePromptInput::new(
                 &brief,
@@ -297,7 +328,8 @@ impl JobScheduler {
                 &since,
                 self.worker_skill_available(),
                 &self.paths.needs_you(),
-            ),
+            )
+            .with_spawn_skill(spawn_skill),
             self.engine,
         )
     }
@@ -335,9 +367,18 @@ pub struct LoopNudgePromptInput<'a> {
     since: &'a SinceLastWake,
     skill_available: bool,
     marker_path: &'a Path,
+    /// The `pmtui-spawn` skill is installed in the session's root. Structural, never ledger prose.
+    spawn_skill: bool,
 }
 
 impl<'a> LoopNudgePromptInput<'a> {
+    /// Whether the session's root holds the `pmtui-spawn` skill. Off unless set, so a nudge never
+    /// points at a skill that is not there.
+    pub fn with_spawn_skill(mut self, spawn_skill: bool) -> Self {
+        self.spawn_skill = spawn_skill;
+        self
+    }
+
     pub fn new(
         brief: &'a str,
         extra: &'a str,
@@ -355,6 +396,7 @@ impl<'a> LoopNudgePromptInput<'a> {
             since,
             skill_available,
             marker_path,
+            spawn_skill: false,
         }
     }
 }
@@ -415,6 +457,7 @@ pub fn loop_nudge_prompt_for_engine(input: LoopNudgePromptInput<'_>, engine: Eng
         since,
         skill_available,
         marker_path,
+        spawn_skill,
     } = input;
     // An empty brief has TWO causes the harness cannot tell apart — a read that lost a
     // race with a mid-write brief (recovery), and a session deliberately created with no
@@ -458,17 +501,17 @@ pub fn loop_nudge_prompt_for_engine(input: LoopNudgePromptInput<'_>, engine: Eng
         e
     };
 
-    // Both engines can discover the canonical skill from natural-language context. Claude's
-    // inline reference keeps its familiar slash-prefixed name; Codex receives the generic name
-    // because it has no Claude slash-command surface. If installation failed, neither engine is
-    // pointed at a procedure it cannot load; the compact inline fallback remains executable.
+    // Each engine can discover the canonical skill from natural-language context. Claude's
+    // inline reference keeps its familiar slash-prefixed name; Codex and TraeX receive the
+    // generic name because they have no Claude slash-command surface. If the skill file is absent
+    // or the pane predates pmd's prelaunch write, the compact inline fallback remains executable.
     let trigger = match (engine, skill_available) {
         (Engine::Claude, true) => format!(
             "Continue the goal per your /{WORKER_SKILL_NAME} skill — re-read it now if it isn't \
              in context; it holds your full loop protocol and the machine-report (WakeReport) \
              schema. Do whatever needs attention right now."
         ),
-        (Engine::Codex, true) => {
+        (Engine::Codex | Engine::Trae, true) => {
             "Continue the goal per your `agent-manager-worker` skill — re-read it now if it isn't \
              in context; it holds your full loop protocol and the machine-report (WakeReport) \
              schema. Do whatever needs attention right now."
@@ -508,19 +551,41 @@ pub fn loop_nudge_prompt_for_engine(input: LoopNudgePromptInput<'_>, engine: Eng
         met, write a `blocked` marker with a `confirm_done` stop, and never treat the goal as \
         finished without human confirmation.";
 
-    // The compact degrade — added only when the native skill is NOT known-installed. It never
-    // introduces a compatibility copy; the canonical skill remains the only source.
-    let degrade = if skill_available {
+    // The compact degrade — added when the native skill is NOT known-installed, and always for
+    // TraeX because its running process may have snapshotted skills before pmd installed the file.
+    // Without a schema fallback a skill-less worker can write `seq`/`status`/`next_step` with no
+    // `state`; every report then fails to parse, and the session parks `Stuck` after three wakes.
+    let (inline_contract, state_clause, spawn_reminder) = if engine == Engine::Trae {
+        // Claude and Codex find the `pmtui-spawn` skill and use it on their own. A live TRAE worker
+        // could see the skill and run it end to end when told to, but never chose it unprompted, so
+        // TRAE is told it exists — only when the file is really installed.
+        let spawn_reminder = if spawn_skill {
+            "\n- To hand an independent part of the goal to a child job, or when \
+             delegated work must be visible in pmtui/audited by the supervisor, do not use \
+             engine-native/internal subagents; use your `pmtui-spawn` skill."
+        } else {
+            ""
+        };
+        (
+            true,
+            " `state` is required and is exactly one of `working`, `monitoring` or `blocked`.",
+            spawn_reminder,
+        )
+    } else {
+        (!skill_available, "", "")
+    };
+    let degrade = if !inline_contract {
         String::new()
     } else {
-        "\n- If your worker skill is not loaded, work in finite wakes: never sleep or poll in \
+        format!(
+            "\n- If your worker skill is not loaded, work in finite wakes: never sleep or poll in \
          the foreground. Before each wake ends, overwrite the marker with seq, state, status, and \
-         next_step (bump seq; write atomically tmp+rename), then end the turn.\n\
+         next_step (bump seq; write atomically tmp+rename), then end the turn.{state_clause}\n\
          - For slow work, detach only lifecycle-safe, non-interactive work with durable output that \
          is independently observable through a revalidatable handle and enforced hard deadline; \
          write the checkpoint plus a monitoring marker, end the turn, and reconcile on the next \
-         wake."
-            .to_string()
+         wake.{spawn_reminder}"
+        )
         // The codex line that used to close this block — "on your FIRST marker also include a
         // `conversation_id`" — is GONE. It asked the worker to declare its own identity because
         // nothing else could learn it; codex's turn hook now reports that id as a fact and pmd

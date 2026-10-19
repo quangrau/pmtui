@@ -3,13 +3,89 @@
 //! decline, because a false dialog parks a session that is working fine.
 
 use super::*;
+use crate::registry::Engine;
 use crate::tmux::activity::{PaneActivity, classify_pane};
 use crate::tmux::dialog::{
-    CODEX_TRUST_QUESTION, DIALOG_MAX_QUESTION_GAP, PaneDialogClass, PaneDialogMode, classify_dialog,
+    CODEX_TRUST_QUESTION, DIALOG_MAX_QUESTION_GAP, PaneDialogClass, PaneDialogMode,
+    classify_dialog, classify_dialog_for_engine,
 };
 use crate::tmux::dialog_option_is_concrete;
 
 // ---- classify_dialog ------------------------------------------------------
+
+#[test]
+fn trae_hook_trust_prompt_is_a_human_only_dialog() {
+    let d = classify_dialog_for_engine(FIXTURE_TRAE_DIALOG_HOOK_TRUST, Engine::Trae)
+        .expect("hook trust prompt recognised");
+    assert_eq!(d.question, "Hooks need review");
+    assert_eq!(
+        d.options,
+        vec![
+            "Review hooks".to_string(),
+            "Trust all and continue".to_string(),
+            "Continue without trusting (hooks won't run)".to_string(),
+        ]
+    );
+    assert_eq!(d.selected_index, Some(0));
+    assert_eq!(d.mode, PaneDialogMode::Single);
+    assert_eq!(
+        d.class,
+        PaneDialogClass::HumanOnly,
+        "trusting hooks lets them run outside the sandbox"
+    );
+}
+
+#[test]
+fn trae_specific_prompts_do_not_match_the_shared_dialog_classifier() {
+    for (name, pane) in [
+        ("hook trust", FIXTURE_TRAE_DIALOG_HOOK_TRUST),
+        ("sign in", FIXTURE_TRAE_DIALOG_SIGNIN),
+    ] {
+        assert_eq!(
+            classify_dialog(pane),
+            None,
+            "TraeX-only {name} prompt must not park Claude or Codex panes"
+        );
+    }
+}
+
+#[test]
+fn trae_signin_chooser_is_a_human_only_dialog_even_below_its_input_box() {
+    let d = classify_dialog_for_engine(FIXTURE_TRAE_DIALOG_SIGNIN, Engine::Trae)
+        .expect("sign-in chooser recognised");
+    assert_eq!(d.question, "Sign in to use TRAE CLI");
+    assert_eq!(
+        d.selected_index,
+        Some(0),
+        "the ASCII `>` marks the selection"
+    );
+    assert_eq!(d.class, PaneDialogClass::HumanOnly);
+    assert_eq!(
+        d.options,
+        vec![
+            "ByteDance Employee Sign in with Codebase Git or ByteDance SSO".to_string(),
+            "Enterprise User Sign in with email, a custom domain, or a PAT".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn an_ascii_marker_is_an_option_only_inside_the_trae_signin_chooser() {
+    // A quoted numbered list in any engine's transcript must not become a dialog.
+    let quoted = concat!(
+        "Which of these should I do?\n",
+        "> 1. Rename the module\n",
+        "> 2. Keep the old name\n",
+        "Esc to cancel\n",
+    );
+    assert!(classify_dialog(quoted).is_none());
+}
+
+#[test]
+fn trae_mid_turn_is_busy() {
+    assert_eq!(classify_pane(FIXTURE_TRAE_BUSY), PaneActivity::Busy);
+    assert!(classify_dialog(FIXTURE_TRAE_BUSY).is_none());
+}
 
 #[test]
 fn real_permission_dialog_yields_the_question_and_all_three_options() {
@@ -467,6 +543,47 @@ fn claude_workspace_trust_dialog_is_human_only() {
         classify_pane(FIXTURE_CLAUDE_DIALOG_TRUST),
         PaneActivity::Busy,
         "trust is a blocking dialog, not an idle composer"
+    );
+}
+
+#[test]
+fn claude_trust_anchors_scattered_over_a_transcript_are_not_the_dialog() {
+    let scattered = concat!(
+        "⏺ The dialog asks: Is this a project you created or one you trust?\n",
+        "  It links a Security guide:\n",
+        "  Security guide\n",
+        "  and offers two answers, one per line. First:\n",
+        "  No, exit\n",
+        "  explained in detail below, and then the second answer\n",
+        "  Yes, I trust this folder\n",
+        "  Enter to confirm · Esc to cancel\n",
+    );
+    assert_eq!(
+        classify_dialog(scattered),
+        None,
+        "the options must be adjacent rows"
+    );
+
+    let far = FIXTURE_CLAUDE_DIALOG_TRUST
+        .replace(" Security guide\n", &" Security guide\n filler\n".repeat(8));
+    assert_eq!(
+        classify_dialog(&far),
+        None,
+        "options far below the question are not this dialog"
+    );
+}
+
+#[test]
+fn claude_trust_context_hash_covers_the_text_between_question_and_options() {
+    let a = classify_dialog(FIXTURE_CLAUDE_DIALOG_TRUST).expect("dialog");
+    let other_dir = FIXTURE_CLAUDE_DIALOG_TRUST.replace(
+        "Claude Code'll be able to read, edit, and execute files here.",
+        "Claude Code'll be able to read files here.",
+    );
+    let b = classify_dialog(&other_dir).expect("dialog");
+    assert_ne!(
+        a.context_hash, b.context_hash,
+        "the paragraph between the question and the options is part of the context"
     );
 }
 

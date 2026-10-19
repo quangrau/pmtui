@@ -238,9 +238,18 @@ impl App {
 /// One wording for "there is no installer here", shared by both entry points so the check and the
 /// update cannot describe the same machine differently.
 fn missing_installer(script: &Path) -> String {
+    let full = script.display().to_string();
+    let shown = match (
+        script.parent().and_then(Path::file_name),
+        script.file_name(),
+    ) {
+        (Some(parent), Some(file)) if parent == "agent-manager" && file == "install.sh" => {
+            format!("agent-manager/install.sh ({full})")
+        }
+        _ => full,
+    };
     format!(
-        "no installer at {} — this build was not installed by install.sh, so it cannot check or \
+        "no installer at {shown} — this build was not installed by install.sh, so it cannot check or \
          update itself",
-        script.display()
     )
 }

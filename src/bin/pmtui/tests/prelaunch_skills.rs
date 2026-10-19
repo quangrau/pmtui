@@ -1,11 +1,14 @@
-//! Every terminal the dashboard launches with `PMTUI_BIN` ships the pmtui-spawn skill into its
-//! project root first: the canonical `.agents/skills/pmtui-spawn/SKILL.md` for both engines, plus
-//! Claude's exact `.claude/skills/pmtui-spawn` alias. A launch that names no pmtui ships nothing,
-//! and a failed install never blocks the launch.
+//! Dashboard launches ship only the skills that are useful before that terminal starts:
+//! `agent-manager-worker` for TraeX, plus `pmtui-spawn` when `PMTUI_BIN` is present. A failed
+//! install never blocks the launch. They are also refreshed before attach, so a live terminal is
+//! not stranded on stale helper files after pmtui upgrades.
 
 use super::*;
 
-use agent_manager::skills::{CLAUDE_SPAWN_SKILL_LINK_TARGET, SPAWN_SKILL_MD};
+use agent_manager::skills::{
+    CLAUDE_SPAWN_SKILL_LINK_TARGET, CLAUDE_WORKER_SKILL_LINK_TARGET, WORKER_SKILL_MD,
+    spawn_skill_text,
+};
 
 const PMTUI: &str = "/opt/am/pmtui";
 
@@ -32,11 +35,12 @@ fn project_dir(dir: &Path) -> PathBuf {
 /// Assert the spawn skill is installed in `root` exactly as `engine` discovers it.
 fn assert_spawn_skill(root: &Path, engine: Engine) {
     let paths = ProjectPaths::new(root);
+    let expected = spawn_skill_text(engine);
     assert_eq!(
         std::fs::read_to_string(paths.canonical_spawn_skill_file())
             .ok()
             .as_deref(),
-        Some(SPAWN_SKILL_MD),
+        Some(expected.as_ref()),
         "{engine:?}: canonical spawn skill"
     );
     match engine {
@@ -48,12 +52,13 @@ fn assert_spawn_skill(root: &Path, engine: Engine) {
             );
             assert_eq!(
                 std::fs::read_to_string(paths.claude_spawn_skill_dir().join("SKILL.md")).unwrap(),
-                SPAWN_SKILL_MD
+                expected.as_ref()
             );
         }
-        Engine::Codex => assert!(
+        Engine::Codex | Engine::Trae => assert!(
             !paths.claude_root_dir().exists(),
-            "Codex discovers .agents/skills natively; no Claude directory appears"
+            "{} discovers .agents/skills natively; no Claude directory appears",
+            engine.label()
         ),
     }
     assert!(
@@ -62,15 +67,46 @@ fn assert_spawn_skill(root: &Path, engine: Engine) {
     );
 }
 
+fn assert_worker_skill(root: &Path, engine: Engine) {
+    let paths = ProjectPaths::new(root);
+    assert_eq!(
+        std::fs::read_to_string(paths.canonical_worker_skill_file())
+            .ok()
+            .as_deref(),
+        Some(WORKER_SKILL_MD),
+        "{engine:?}: canonical worker skill"
+    );
+    match engine {
+        Engine::Claude => {
+            assert_eq!(
+                std::fs::read_link(paths.claude_project_skill_dir()).ok(),
+                Some(PathBuf::from(CLAUDE_WORKER_SKILL_LINK_TARGET)),
+                "Claude reaches it through its exact per-skill alias"
+            );
+            assert_eq!(
+                std::fs::read_to_string(paths.claude_project_skill_dir().join("SKILL.md")).unwrap(),
+                WORKER_SKILL_MD
+            );
+        }
+        Engine::Codex | Engine::Trae => {}
+    }
+}
+
 fn assert_no_spawn_skill(root: &Path) {
     let paths = ProjectPaths::new(root);
     assert!(!paths.canonical_spawn_skill_file().exists());
     assert!(std::fs::symlink_metadata(paths.claude_spawn_skill_dir()).is_err());
 }
 
+fn assert_no_worker_skill(root: &Path) {
+    let paths = ProjectPaths::new(root);
+    assert!(!paths.canonical_worker_skill_file().exists());
+    assert!(std::fs::symlink_metadata(paths.claude_project_skill_dir()).is_err());
+}
+
 #[test]
-fn standard_create_installs_the_spawn_skill_and_claude_link() {
-    for engine in [Engine::Claude, Engine::Codex] {
+fn standard_create_installs_prelaunch_skills_before_launch() {
+    for engine in [Engine::Claude, Engine::Codex, Engine::Trae] {
         let dir = tempfile::tempdir().unwrap();
         let reg_path = dir.path().join("registry.json");
         let project = project_dir(dir.path());
@@ -83,12 +119,17 @@ fn standard_create_installs_the_spawn_skill_and_claude_link() {
 
         assert_eq!(pane.launches().len(), 1, "{engine:?}: {}", app.status);
         assert_spawn_skill(&project, engine);
+        if engine == Engine::Trae {
+            assert_worker_skill(&project, engine);
+        } else {
+            assert_no_worker_skill(&project);
+        }
     }
 }
 
 #[test]
-fn no_pmtui_bin_means_no_spawn_skill() {
-    for engine in [Engine::Claude, Engine::Codex] {
+fn no_pmtui_bin_means_only_trae_gets_its_prelaunch_worker_skill() {
+    for engine in [Engine::Claude, Engine::Codex, Engine::Trae] {
         let dir = tempfile::tempdir().unwrap();
         let reg_path = dir.path().join("registry.json");
         let project = project_dir(dir.path());
@@ -101,23 +142,25 @@ fn no_pmtui_bin_means_no_spawn_skill() {
 
         assert_eq!(pane.launches().len(), 1, "{engine:?}: {}", app.status);
         assert_no_spawn_skill(&project);
+        if engine == Engine::Trae {
+            assert_worker_skill(&project, engine);
+        } else {
+            assert_no_worker_skill(&project);
+        }
     }
 }
 
 #[test]
-fn resume_and_restart_ship_the_skill_before_the_terminal_starts() {
+fn resume_and_restart_ship_prelaunch_skills_before_the_terminal_starts() {
     // `start_undriven_session` is the launch behind Enter-after-pause and `r`. The install runs
-    // before the launch, so even a launch tmux refuses leaves the skill for the retry.
-    for engine in [Engine::Claude, Engine::Codex] {
+    // before the launch, so even a launch tmux refuses leaves the skills for the retry.
+    for engine in [Engine::Claude, Engine::Codex, Engine::Trae] {
         let dir = tempfile::tempdir().unwrap();
         let pane = FakePane::default();
         let mut app = app_with_driver(vec![], UiMode::Normal, Box::new(pane.clone()));
         app.pmtui_bin = Some(PathBuf::from(PMTUI));
         let session = session_name("bot", dir.path());
-        pane.arm_launch_error(
-            &session,
-            tmux::LaunchError::NotOnPath(engine.label().into()),
-        );
+        pane.arm_launch_error(&session, tmux::LaunchError::NotOnPath(engine.bin().into()));
 
         let outcome = app.start_undriven_session(
             "bot",
@@ -133,6 +176,11 @@ fn resume_and_restart_ship_the_skill_before_the_terminal_starts() {
             "{engine:?}: the armed launch error must reach the caller"
         );
         assert_spawn_skill(dir.path(), engine);
+        if engine == Engine::Trae {
+            assert_worker_skill(dir.path(), engine);
+        } else {
+            assert_no_worker_skill(dir.path());
+        }
     }
 }
 
@@ -157,8 +205,8 @@ fn a_failed_install_never_blocks_a_standard_launch() {
 }
 
 #[test]
-fn chat_launches_ship_the_skill_before_the_terminal_starts() {
-    for engine in [Engine::Claude, Engine::Codex] {
+fn chat_launches_ship_prelaunch_skills_before_the_terminal_starts() {
+    for engine in [Engine::Claude, Engine::Codex, Engine::Trae] {
         let dir = tempfile::tempdir().unwrap();
         let paths = ProjectPaths::for_session(dir.path(), "bot");
         let req = ChatReq {
@@ -181,6 +229,11 @@ fn chat_launches_ship_the_skill_before_the_terminal_starts() {
         chat_with_handoff(&mut NoHandoff, &pane, &req, || {}).unwrap_err();
 
         assert_spawn_skill(dir.path(), engine);
+        if engine == Engine::Trae {
+            assert_worker_skill(dir.path(), engine);
+        } else {
+            assert_no_worker_skill(dir.path());
+        }
     }
 
     let dir = tempfile::tempdir().unwrap();
@@ -205,10 +258,11 @@ fn chat_launches_ship_the_skill_before_the_terminal_starts() {
     create_chat_with_handoff(&mut NoHandoff, &pane, req, || {}).unwrap_err();
 
     assert_spawn_skill(dir.path(), Engine::Claude);
+    assert_no_worker_skill(dir.path());
 }
 
 #[test]
-fn a_chat_launch_that_names_no_pmtui_ships_no_skill() {
+fn a_chat_launch_that_names_no_pmtui_ships_only_the_trae_worker_skill() {
     let dir = tempfile::tempdir().unwrap();
     let paths = ProjectPaths::for_session(dir.path(), "bot");
     let req = ChatReq {
@@ -225,6 +279,51 @@ fn a_chat_launch_that_names_no_pmtui_ships_no_skill() {
     chat_with_handoff(&mut NoHandoff, &FakePane::default(), &req, || {}).unwrap();
 
     assert_no_spawn_skill(dir.path());
+    assert_no_worker_skill(dir.path());
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ProjectPaths::for_session(dir.path(), "bot");
+    let req = ChatReq {
+        session_paths: paths.clone(),
+        root: dir.path().to_path_buf(),
+        argv: vec!["agent".into()],
+        label: "bot".into(),
+        socket: "pm-test".into(),
+        session: "pm-bot".into(),
+        engine: Engine::Trae,
+        env: tmux::ManagedEnv::default(),
+    };
+
+    chat_with_handoff(&mut NoHandoff, &FakePane::default(), &req, || {}).unwrap();
+
+    assert_no_spawn_skill(dir.path());
+    assert_worker_skill(dir.path(), Engine::Trae);
+}
+
+#[test]
+fn attaching_to_an_existing_chat_terminal_refreshes_skills() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ProjectPaths::for_session(dir.path(), "bot");
+    let req = ChatReq {
+        session_paths: paths.clone(),
+        root: dir.path().to_path_buf(),
+        argv: vec!["agent".into()],
+        label: "bot".into(),
+        socket: "pm-test".into(),
+        session: "pm-bot".into(),
+        engine: Engine::Trae,
+        env: tmux::ManagedEnv {
+            session_id: "bot".into(),
+            state_dir: paths.state_dir(),
+            pmtui_bin: Some(PathBuf::from(PMTUI)),
+        },
+    };
+    let pane = FakePane::live_quiet("pm-bot");
+
+    chat_with_handoff(&mut NoHandoff, &pane, &req, || {}).unwrap();
+
+    assert_spawn_skill(dir.path(), Engine::Trae);
+    assert_worker_skill(dir.path(), Engine::Trae);
 }
 
 #[test]
@@ -232,7 +331,7 @@ fn enter_queues_each_chat_launch_with_its_rows_engine() {
     // First Enter on a Standard row whose immediate launch failed: Claude creates its
     // conversation (`CreateChatReq`), Codex opens a fresh chat (`ChatReq`). Each request carries
     // the row's engine so the launch installs the skill in that engine's discovery form.
-    for engine in [Engine::Claude, Engine::Codex] {
+    for engine in [Engine::Claude, Engine::Codex, Engine::Trae] {
         let dir = tempfile::tempdir().unwrap();
         let reg_path = dir.path().join("registry.json");
         let project = project_dir(dir.path());
@@ -250,7 +349,7 @@ fn enter_queues_each_chat_launch_with_its_rows_engine() {
         handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
 
         let queued = match engine {
-            Engine::Claude => app.pending_create_chat.as_ref().map(|req| req.engine),
+            Engine::Claude | Engine::Trae => app.pending_create_chat.as_ref().map(|req| req.engine),
             Engine::Codex => app.pending_chat.as_ref().map(|req| req.engine),
         };
         assert_eq!(queued, Some(engine), "{engine:?}: {}", app.status);

@@ -152,7 +152,7 @@ impl App {
     /// session's state paths; a refusal keeps the whole form open for the human to shorten it.
     fn create_at(&mut self, form: CreateForm, dir: PathBuf) {
         let registry = Registry::load(&self.registry_path).unwrap_or_default();
-        if let Some(bytes) = initial_launch_bytes(&form, &dir, &registry)
+        if let Some(bytes) = initial_launch_bytes(&form, &dir, &registry, self.pmtui_bin.as_deref())
             && bytes > tmux::LAUNCH_COMMAND_MAX_BYTES
         {
             let over = bytes - tmux::LAUNCH_COMMAND_MAX_BYTES;
@@ -490,6 +490,7 @@ impl App {
         });
         let captured_cid = crate::decide::read_captured_conversation_id(&paths);
         let existing = crate::decide::effective_id(
+            engine,
             ledger_cid.as_deref(),
             registry_cid.as_deref(),
             captured_cid.as_deref(),
@@ -547,7 +548,7 @@ impl App {
         };
         let session = session_name(id, root);
         let env = self.managed_env(id, root);
-        crate::session::install_spawn_skill(root, engine, &env);
+        crate::session::install_prelaunch_skills(root, engine, &env);
         if engine == Engine::Codex && existing.is_none() {
             let argv = with_initial_prompt(
                 build_codex_fresh_chat(model, &paths.turn_signal()),
@@ -580,9 +581,15 @@ impl App {
             ) != Some(false);
         let turn_signal = paths.turn_signal();
         let argv = if resume {
-            build_chat(engine, &cid, model, &turn_signal)
+            build_chat_with_pmtui_bin(engine, &cid, model, &turn_signal, env.pmtui_bin.as_deref())
         } else {
-            build_chat_create(engine, &cid, model, &turn_signal)
+            build_chat_create_with_pmtui_bin(
+                engine,
+                &cid,
+                model,
+                &turn_signal,
+                env.pmtui_bin.as_deref(),
+            )
         };
         let argv = with_initial_prompt(argv, initial_prompt);
         // Through the INJECTABLE driver, not a fresh `TmuxDriver`: this is the one place create
@@ -652,39 +659,48 @@ fn new_session_id_base(dir: &Path) -> String {
 /// before its real id is minted.
 const MINTED_ID_SHAPE: &str = "00000000-0000-4000-8000-000000000000";
 
-/// The argv of a FRESH Standard launch carrying its one-time initial Message: Claude creates
-/// conversation `claude_id` (`build_chat_create`), while Codex has no caller-chosen id, starts
-/// its own (`build_codex_fresh_chat`) and ignores `claude_id`.
-///
-/// The one builder both the launch budget ([`fresh_launch_bytes`]) and the spawn broker's launch
-/// use, so a budget check measures exactly the command that later runs.
-pub(crate) fn fresh_standard_argv(
+/// The fresh Standard argv carrying its one-time Message. The launch budget and the real
+/// launch use this same builder so the size check measures the command that will run,
+/// including whether the launch can install its engine's hooks.
+pub(crate) fn fresh_standard_argv_with_pmtui_bin(
     engine: Engine,
     claude_id: &str,
     model: Option<&str>,
     turn_signal: &Path,
     message: Option<&str>,
+    pmtui_bin: Option<&Path>,
 ) -> Vec<String> {
     let argv = match engine {
         Engine::Codex => build_codex_fresh_chat(model, turn_signal),
-        Engine::Claude => build_chat_create(Engine::Claude, claude_id, model, turn_signal),
+        Engine::Claude | Engine::Trae => {
+            build_chat_create_with_pmtui_bin(engine, claude_id, model, turn_signal, pmtui_bin)
+        }
     };
     with_initial_prompt(argv, message)
 }
 
 /// The exact size, as tmux receives it ([`tmux::launch_command`]), of the fresh Standard launch
-/// a new session in `dir` would start with `message`: built with [`fresh_standard_argv`] for the
-/// id [`reserve_new_session`] would claim next and a conversation id of the minted length.
+/// a new session in `dir` would start with `message`: built with
+/// [`fresh_standard_argv_with_pmtui_bin`] for the id [`reserve_new_session`] would claim next
+/// and a conversation id of the minted length.
 pub(crate) fn fresh_launch_bytes(
     reg: &Registry,
     dir: &Path,
     engine: Engine,
     model: Option<&str>,
     message: &str,
+    pmtui_bin: Option<&Path>,
 ) -> usize {
     let id = unreserved_id(reg, dir, &new_session_id_base(dir));
     let turn_signal = ProjectPaths::for_session(dir, &id).turn_signal();
-    let argv = fresh_standard_argv(engine, MINTED_ID_SHAPE, model, &turn_signal, Some(message));
+    let argv = fresh_standard_argv_with_pmtui_bin(
+        engine,
+        MINTED_ID_SHAPE,
+        model,
+        &turn_signal,
+        Some(message),
+        pmtui_bin,
+    );
     tmux::launch_command(&argv).len()
 }
 
@@ -694,7 +710,12 @@ pub(crate) fn fresh_launch_bytes(
 /// Built with the argv builders [`App::start_undriven_session`] uses, for the id
 /// `finish_create` would reserve and a conversation id of the minted length, so the estimate
 /// is the launch itself. Enter's later retries rebuild the same shape (or the shorter resume).
-pub(crate) fn initial_launch_bytes(form: &CreateForm, dir: &Path, reg: &Registry) -> Option<usize> {
+pub(crate) fn initial_launch_bytes(
+    form: &CreateForm,
+    dir: &Path,
+    reg: &Registry,
+    pmtui_bin: Option<&Path>,
+) -> Option<usize> {
     let message = initial_message(form)?;
     Some(fresh_launch_bytes(
         reg,
@@ -702,6 +723,7 @@ pub(crate) fn initial_launch_bytes(form: &CreateForm, dir: &Path, reg: &Registry
         form.engine,
         form.worker_model.as_deref(),
         message,
+        pmtui_bin,
     ))
 }
 

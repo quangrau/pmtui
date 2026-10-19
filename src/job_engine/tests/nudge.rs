@@ -703,6 +703,115 @@ fn loop_nudge_prompt_writes_the_marker_instruction() {
     assert!(p2.contains("the human said: go"));
 }
 
+/// TRAE sees the `pmtui-spawn` skill and can run it end to end, but never chose it unprompted, so
+/// its nudge names the skill — and ONLY when it is installed. Claude and Codex choose it alone.
+#[test]
+fn only_a_trae_nudge_names_the_spawn_skill_and_only_when_it_is_installed() {
+    let marker = std::path::Path::new("/tmp/proj/.project-state/sessions/s/needs-you.json");
+    let since = SinceLastWake::default();
+    let line = "use your `pmtui-spawn` skill";
+    let audit_line = "do not use engine-native/internal subagents";
+    let render = |engine, spawn_skill| {
+        loop_nudge_prompt_for_engine(
+            LoopNudgePromptInput::new("goal", "", "", "", &since, true, marker)
+                .with_spawn_skill(spawn_skill),
+            engine,
+        )
+    };
+    let trae_with_skill = render(Engine::Trae, true);
+    assert!(trae_with_skill.contains(line));
+    assert!(
+        trae_with_skill.contains(audit_line),
+        "TraeX must route audited delegation through pmtui, not its native subagent layer"
+    );
+    assert!(
+        !render(Engine::Trae, false).contains(audit_line),
+        "no skill, no pointer"
+    );
+    for engine in [Engine::Claude, Engine::Codex] {
+        let prompt = render(engine, true);
+        assert!(!prompt.contains(line), "{engine:?}");
+        assert!(!prompt.contains(audit_line), "{engine:?}");
+    }
+}
+
+#[test]
+fn the_scheduler_names_the_spawn_skill_only_once_it_is_on_disk() {
+    let fx = setup(Tier::Autopilot, Engine::Trae, Some(300));
+    let base = ledger(&fx);
+    let line = "use your `pmtui-spawn` skill";
+    assert!(
+        !fx.sched
+            .compose_nudge(&base, START, false, false)
+            .contains(line)
+    );
+
+    let skill = fx.sched.work_dir.join(crate::skills::SPAWN_SKILL_REL_PATH);
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(&skill, "---\nname: pmtui-spawn\n---\n").unwrap();
+    assert!(
+        fx.sched
+            .compose_nudge(&base, START, false, false)
+            .contains(line)
+    );
+}
+
+/// TraeX can snapshot skills before pmd first sees the pane. Even when the canonical skill file is
+/// now on disk, its nudge keeps the compact schema so a late install cannot make every report fail
+/// to parse.
+#[test]
+fn a_trae_nudge_keeps_the_inline_report_contract_even_when_the_skill_file_exists() {
+    let marker = std::path::Path::new("/tmp/proj/.project-state/sessions/s/needs-you.json");
+    let since = SinceLastWake::default();
+    let trae = loop_nudge_prompt_for_engine(
+        LoopNudgePromptInput::new("goal", "", "", "", &since, true, marker),
+        Engine::Trae,
+    );
+    assert!(trae.contains("`agent-manager-worker` skill"), "{trae}");
+    assert!(
+        trae.contains("If your worker skill is not loaded"),
+        "{trae}"
+    );
+    for required in [
+        "seq, state, status, and next_step",
+        "`state` is required",
+        "`working`, `monitoring` or `blocked`",
+    ] {
+        assert!(trae.contains(required), "missing {required:?}: {trae}");
+    }
+
+    // An engine with an installed skill still gets the schema from the skill, not the nudge.
+    for engine in [Engine::Claude, Engine::Codex] {
+        let prompt = loop_nudge_prompt_for_engine(
+            LoopNudgePromptInput::new("goal", "", "", "", &since, true, marker),
+            engine,
+        );
+        assert!(
+            !prompt.contains("`state` is required"),
+            "{engine:?}: {prompt}"
+        );
+    }
+}
+
+#[test]
+fn a_report_without_state_does_not_parse_and_one_with_state_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("needs-you.json");
+    // The live TRAE report that stalled `aspace-contest-2`.
+    std::fs::write(
+        &path,
+        r#"{"seq":2,"status":"Starting ranked games now.","next_step":"Run ranked games.","ts":"2026-10-13T01:30:00Z"}"#,
+    )
+    .unwrap();
+    assert!(crate::job_engine::marker::parse_report(&path).is_err());
+    std::fs::write(
+        &path,
+        r#"{"seq":2,"state":"working","status":"Starting ranked games now.","next_step":"Run ranked games."}"#,
+    )
+    .unwrap();
+    assert!(crate::job_engine::marker::parse_report(&path).is_ok());
+}
+
 #[test]
 fn loop_nudge_prompt_invokes_the_worker_skill_in_the_engines_native_form() {
     let marker = std::path::Path::new("/tmp/proj/.project-state/sessions/s/needs-you.json");
@@ -718,10 +827,19 @@ fn loop_nudge_prompt_invokes_the_worker_skill_in_the_engines_native_form() {
     assert!(!codex.contains("/agent-manager-worker"));
     assert!(codex.contains("`agent-manager-worker` skill"));
 
+    let trae = loop_nudge_prompt_for_engine(input(true), Engine::Trae);
+    assert!(!trae.contains("/agent-manager-worker"));
+    assert!(trae.contains("`agent-manager-worker` skill"), "{trae}");
+    assert!(!trae.contains("follow the inline fallback below"), "{trae}");
+
     let claude_without_skill = loop_nudge_prompt_for_engine(input(false), Engine::Claude);
     assert!(!claude_without_skill.contains("/agent-manager-worker"));
     assert!(claude_without_skill.contains("follow the inline fallback below"));
     assert!(claude_without_skill.contains("If your worker skill is not loaded"));
+    assert!(
+        !claude_without_skill.contains("`state` is required"),
+        "the stricter report-schema sentence is TraeX-only: {claude_without_skill}"
+    );
     for required in [
         "finite wakes",
         "never sleep or poll",
@@ -1338,13 +1456,13 @@ fn no_nudge_asks_codex_to_declare_its_own_conversation_id() {
     // as a FACT and pmd ignores a worker-authored one, so the instruction would be asking an agent
     // for something discarded on arrival — a prompt disagreeing with the policy behind it.
     //
-    // Checked on BOTH paths and BOTH engines, because the ask only ever appeared on one of the four
+    // Checked on both paths and every engine, because the ask only ever appeared on one branch
     // and a revival would be easy to miss.
     let marker = std::path::Path::new("/tmp/proj/.project-state/sessions/s/needs-you.json");
     let since = SinceLastWake::default();
     let input =
         |available| LoopNudgePromptInput::new("goal", "", "", "", &since, available, marker);
-    for engine in [Engine::Codex, Engine::Claude] {
+    for engine in [Engine::Codex, Engine::Claude, Engine::Trae] {
         for skill_available in [false, true] {
             let prompt = loop_nudge_prompt_for_engine(input(skill_available), engine);
             assert!(

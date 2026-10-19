@@ -4,6 +4,7 @@
 //! natively into the session root's canonical `.agents/skills` directory, plus a Claude per-skill
 //! symlink; decider: appended to the consult system prompt).
 
+use std::borrow::Cow;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -12,7 +13,7 @@ use crate::state::ProjectPaths;
 use crate::tmux::ManagedEnv;
 
 /// The worker loop protocol Milestone E moves OUT of the per-wake nudge and into the canonical
-/// project skill auto-discovered by either engine.
+/// project skill auto-discovered by Codex and TraeX.
 pub const WORKER_SKILL_MD: &str = include_str!("../skills/agent-manager-worker/SKILL.md");
 
 /// The supervisor-consult reasoning protocol (Milestone E, Task 5). Appended to the consult's
@@ -26,7 +27,7 @@ pub const WORKER_SKILL_NAME: &str = "agent-manager-worker";
 /// Claude reaches the same directory through [`CLAUDE_WORKER_SKILL_LINK_REL_PATH`].
 pub const WORKER_SKILL_REL_PATH: &str = ".agents/skills/agent-manager-worker/SKILL.md";
 
-/// Codex's canonical repository skill path.
+/// Codex and TraeX's canonical repository skill path.
 pub const CODEX_WORKER_SKILL_REL_PATH: &str = ".agents/skills/agent-manager-worker/SKILL.md";
 
 /// Claude's project skills directory relative to the project root.
@@ -39,14 +40,29 @@ pub const CLAUDE_WORKER_SKILL_LINK_REL_PATH: &str = ".claude/skills/agent-manage
 pub const CLAUDE_WORKER_SKILL_LINK_TARGET: &str = "../../.agents/skills/agent-manager-worker";
 
 /// The procedure an agent inside a managed session follows to hand independent work to a new
-/// Standard session through `"$PMTUI_BIN" spawn`. Shipped by the process that launches the
-/// terminal, only when that launch names pmtui ([`install_spawn_skill_for_launch`]).
+/// Standard session through `"$PMTUI_BIN" spawn`. Shipped only when pmd can name pmtui
+/// ([`install_spawn_skill_for_launch`]), so the command in the procedure is runnable.
 pub const SPAWN_SKILL_MD: &str = include_str!("../skills/pmtui-spawn/SKILL.md");
+
+const TRAE_SPAWN_SKILL_APPENDIX: &str = "\n\n## TraeX Delegation Routing\n\nWhen you need to \
+delegate work, spawn a worker, create a subagent, or use a general-purpose agent, use the \
+`pmtui-spawn` skill and the `pmtui spawn` command. Do not use TraeX native subagents for \
+harness-managed work.\n";
+
+pub fn spawn_skill_text(engine: Engine) -> Cow<'static, str> {
+    if engine == Engine::Trae {
+        // TraeX needs provider-specific vocabulary to route "subagent" requests through pmtui,
+        // while Claude/Codex must keep the shared skill's prompt surface byte-stable.
+        Cow::Owned(format!("{SPAWN_SKILL_MD}{TRAE_SPAWN_SKILL_APPENDIX}"))
+    } else {
+        Cow::Borrowed(SPAWN_SKILL_MD)
+    }
+}
 
 /// The spawn skill's name, and its directory under `.agents/skills/` and `.claude/skills/`.
 pub const SPAWN_SKILL_NAME: &str = "pmtui-spawn";
 
-/// The canonical spawn SKILL.md path relative to a project root, shared by Claude and Codex.
+/// The canonical spawn SKILL.md path relative to a project root, shared by Claude, Codex, and TraeX.
 pub const SPAWN_SKILL_REL_PATH: &str = ".agents/skills/pmtui-spawn/SKILL.md";
 
 /// Claude's spawn-skill directory alias relative to the project root.
@@ -148,25 +164,39 @@ pub fn ensure_claude_skill_link(paths: &ProjectPaths, name: &str) -> io::Result<
     Ok(())
 }
 
+/// Install the worker skill in `paths.root`: write the canonical
+/// `.agents/skills/agent-manager-worker/SKILL.md` (atomically, replacing a stale copy) and, for
+/// Claude, ensure its exact `.claude/skills/agent-manager-worker` alias. NEVER creates or modifies
+/// the user's `AGENTS.md`, and never touches sibling skills.
+pub fn install_worker_skill(paths: &ProjectPaths, engine: Engine) -> anyhow::Result<()> {
+    // TraeX snapshots project skills on process startup; callers that launch TraeX write this
+    // before `launch_interactive`, while pmd still installs it for every adopted Autopilot pane.
+    crate::state::write_text_atomic(&paths.canonical_worker_skill_file(), WORKER_SKILL_MD)?;
+    if engine == Engine::Claude {
+        ensure_claude_worker_skill_link(paths)?;
+    }
+    Ok(())
+}
+
 /// Install the spawn skill in `paths.root`: write the canonical
 /// `.agents/skills/pmtui-spawn/SKILL.md` (atomically, replacing a stale copy) and, for Claude,
 /// ensure its exact `.claude/skills/pmtui-spawn` alias. NEVER creates or modifies the user's
 /// `AGENTS.md`, and never touches the worker skill or any sibling skill.
 pub fn install_spawn_skill(paths: &ProjectPaths, engine: Engine) -> anyhow::Result<()> {
     // Creates `.agents/skills/pmtui-spawn/` as needed; the temp+rename never tears the file.
-    crate::state::write_text_atomic(&paths.canonical_spawn_skill_file(), SPAWN_SKILL_MD)?;
+    let skill = spawn_skill_text(engine);
+    crate::state::write_text_atomic(&paths.canonical_spawn_skill_file(), skill.as_ref())?;
     if engine == Engine::Claude {
         ensure_claude_skill_link(paths, SPAWN_SKILL_NAME)?;
     }
     Ok(())
 }
 
-/// The shared pre-launch installer every pmtui and pmd launch site calls just before
-/// `launch_interactive`: install the spawn skill into `root` for a terminal about to start with
+/// The shared installer for the spawn skill: install it into `root` for a managed terminal with
 /// `env`, but only when `env` names pmtui (`PMTUI_BIN`). The skill's command runs `"$PMTUI_BIN"`,
-/// so a launch without it gets nothing and returns `Ok(())`.
+/// so a session without it gets nothing and returns `Ok(())`.
 ///
-/// Callers treat a failure as non-fatal: the launch proceeds, and `pmd doctor` reports the
+/// Callers treat a failure as non-fatal: the session proceeds, and `pmd doctor` reports the
 /// missing or stale skill.
 pub fn install_spawn_skill_for_launch(
     root: &Path,
@@ -214,162 +244,5 @@ mod option_voice_tests;
 mod spawn_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // The skill loader parses the frontmatter as YAML. A prose `description:` invites the classic
-    // "mapping values are not allowed in this context" trap: an UNQUOTED value that itself contains
-    // a colon-space ("the operating rules: you reach ...") is read as a nested mapping and the whole
-    // skill fails to load. There is no YAML parser in this crate, so pin the one rule that bites:
-    // every frontmatter value is either quoted or free of a `": "`. This is the guard that would
-    // have caught the worker skill shipping with an unparseable description.
-    #[test]
-    fn embedded_skill_frontmatter_has_no_unquoted_colon_in_a_value() {
-        for (name, md) in [
-            ("worker", WORKER_SKILL_MD),
-            ("decider", DECIDER_SKILL_MD),
-            ("spawn", SPAWN_SKILL_MD),
-        ] {
-            let mut lines = md.lines();
-            assert_eq!(
-                lines.next(),
-                Some("---"),
-                "{name}: frontmatter opens with ---"
-            );
-            for line in lines {
-                if line == "---" {
-                    break; // end of frontmatter
-                }
-                // Only `key: value` lines carry a value to check; skip blanks / mapping headers.
-                let Some((_key, value)) = line.split_once(": ") else {
-                    continue;
-                };
-                let quoted = (value.starts_with('\'') && value.ends_with('\''))
-                    || (value.starts_with('"') && value.ends_with('"'));
-                assert!(
-                    quoted || !value.contains(": "),
-                    "{name}: an unquoted colon-space in a frontmatter value breaks YAML \
-                     (\"mapping values are not allowed\") — remove the colon or quote the value: \
-                     {line}"
-                );
-            }
-        }
-    }
-
-    // NON-VACUITY: this fails today because `WORKER_SKILL_MD` does not exist / is empty. It
-    // pins that EVERY non-negotiable operating rule and the FULL machine-report schema that
-    // Milestone E removes from the nudge actually survives in the skill body — so relocating
-    // the protocol out of the nudge cannot silently lose a rule.
-    #[test]
-    fn worker_skill_carries_the_non_negotiables_and_the_full_schema() {
-        let s = WORKER_SKILL_MD;
-        // Frontmatter so claude can auto-invoke on the trigger.
-        assert!(s.starts_with("---\n"), "has YAML frontmatter");
-        assert!(
-            s.contains("description:"),
-            "has a description for auto-invocation"
-        );
-        // Comms ownership — the non-negotiable rule that must never be lost. The harness is
-        // the channel; NO external integration (e.g. a Slack MCP) may be assumed.
-        assert!(s.contains("sends no messages on your behalf"));
-        assert!(s.contains("channel to the human"));
-        assert!(
-            !s.contains("Slack MCP"),
-            "the worker skill must not assume a Slack MCP integration exists"
-        );
-        assert!(
-            !s.contains("own all communication"),
-            "neither the body nor the frontmatter description may reinstate the 'agent owns \
-             comms' framing — the harness is the channel"
-        );
-        assert!(
-            s.contains("working toward the session goal on a heartbeat"),
-            "the worker skill must frame the whole recorded brief without implying one atomic \
-             objective"
-        );
-        assert!(
-            !s.contains("working ONE goal"),
-            "a goal brief may contain multiple objectives"
-        );
-        assert!(
-            s.contains("the whole goal is now SATISFIED"),
-            "completion must cover the whole recorded brief"
-        );
-        assert!(
-            !s.contains("the goal's rule"),
-            "completion must not imply one atomic rule"
-        );
-        // You do not decide when done — verbatim invariants relocated from the nudge.
-        assert!(s.contains("There is no \"done\" you can set"));
-        assert!(s.contains("A human decides when this session is complete"));
-        assert!(s.contains("never mark the project finished yourself"));
-        assert!(s.contains("or abandon it"));
-        assert!(s.contains("Ending a finite wake"));
-        // The confirm_done sanction (moved out of the nudge).
-        assert!(s.contains("confirm_done"));
-        assert!(s.contains("\"state\": \"blocked\""));
-        assert!(s.contains("REQUEST FOR CONFIRMATION"));
-        // The FULL WakeReport schema fields (moved out of the nudge).
-        assert!(s.contains("\"seq\""));
-        assert!(s.contains("\"next_step\""));
-        assert!(s.contains("\"cadence_s\""));
-        assert!(s.contains("\"next_check_s\""));
-        assert!(s.contains("working") && s.contains("monitoring") && s.contains("blocked"));
-        // Atomicity + audit-only seq + codex conversation_id rules.
-        assert!(s.contains("tmp") && s.contains("rename"));
-        assert!(s.contains("diagnostic stamp"));
-        assert!(s.contains("assigns its own report generation"));
-        assert!(s.contains("backward timestamp cannot block"));
-        assert!(s.contains("conversation_id"));
-        // Pick up your own plan.
-        assert!(s.contains("your OWN plan"));
-        // The skill must NOT hardcode a marker path (that is per-session, supplied by the nudge).
-        assert!(
-            !s.contains("/.project-state/"),
-            "no baked-in per-session path"
-        );
-    }
-
-    #[test]
-    fn worker_skill_name_and_relpath_are_stable() {
-        assert_eq!(WORKER_SKILL_NAME, "agent-manager-worker");
-        assert_eq!(
-            WORKER_SKILL_REL_PATH,
-            ".agents/skills/agent-manager-worker/SKILL.md"
-        );
-        assert_eq!(
-            CODEX_WORKER_SKILL_REL_PATH,
-            ".agents/skills/agent-manager-worker/SKILL.md"
-        );
-        assert_eq!(CLAUDE_SKILLS_REL_PATH, ".claude/skills");
-        assert_eq!(
-            CLAUDE_WORKER_SKILL_LINK_REL_PATH,
-            ".claude/skills/agent-manager-worker"
-        );
-        assert_eq!(
-            CLAUDE_WORKER_SKILL_LINK_TARGET,
-            "../../.agents/skills/agent-manager-worker"
-        );
-    }
-
-    #[test]
-    fn decider_skill_formalizes_the_consult_ladder() {
-        let s = DECIDER_SKILL_MD;
-        assert!(s.starts_with("---\n"), "has YAML frontmatter");
-        assert!(s.contains("Auto-approve (act)"));
-        assert!(s.contains("refuse"));
-        assert!(s.contains("has NOT approved"));
-        assert!(s.contains("validated verdict is required"));
-        assert!(!s.contains("ALREADY approved"));
-        assert!(
-            s.contains("SITUATION"),
-            "explains how to read the C situation block"
-        );
-        // verify-don't-defer-to-precedent (C's core anti-rubber-stamp rule).
-        assert!(s.contains("verify"));
-        assert!(s.contains("precedent"));
-        // It must not weaken the read-only, two-writers rule.
-        assert!(s.contains("READ-ONLY"));
-        assert!(s.contains("cannot write"));
-    }
-}
+#[path = "skills/tests/skill_files.rs"]
+mod tests;

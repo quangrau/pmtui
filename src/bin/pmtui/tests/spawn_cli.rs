@@ -286,6 +286,8 @@ fn parse_accepts_every_documented_flag_and_defaults_the_rest() {
 
     let minimal = cli(&["--message", "m", "--agent", "claude", "--wait", "0"]);
     assert_eq!(minimal.args.agent, Some(Engine::Claude));
+    let traex = cli(&["--message", "m", "--agent", "traex"]);
+    assert_eq!(traex.args.agent, Some(Engine::Trae));
     assert_eq!(minimal.wait_s, 0);
     assert_eq!(cli(&["--message", "m"]).wait_s, DEFAULT_WAIT_S);
     assert_eq!(DEFAULT_WAIT_S, 20);
@@ -335,7 +337,7 @@ fn parse_rejects_missing_message_bad_uuid_unknown_agent_and_out_of_range_wait() 
         ),
         (
             &["--message", "m", "--agent", "gemini"],
-            "--agent must be claude or codex",
+            "--agent must be claude, codex or traex",
         ),
         (&["--message", "m", "--wait", "121"], "--wait"),
         (&["--message", "m", "--wait", "-1"], "--wait"),
@@ -1379,6 +1381,7 @@ fn the_dashboard_action_runs_the_dashboard_and_reports_its_result() {
         registry: PathBuf::from("/tmp/r.json"),
         socket: "s".into(),
         help: false,
+        channel: None,
     };
     let mut seen = None;
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -1399,6 +1402,7 @@ fn the_dashboard_action_runs_the_dashboard_and_reports_its_result() {
         registry: PathBuf::from("/tmp/r.json"),
         socket: "s".into(),
         help: false,
+        channel: None,
     };
     let error = dispatch(
         Ok(Action::Dashboard(args)),

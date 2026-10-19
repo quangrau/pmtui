@@ -32,6 +32,25 @@ const CLAUDE_SURVEY_PANE: &str = concat!(
     "────────────────────────────────\n",
 );
 
+const CLAUDE_USAGE_LIMIT_PANE: &str = concat!(
+    "● Done.\n",
+    "\n",
+    "⚠ Usage limit reached · continuing automatically at 5pm · esc to cancel\n",
+    "────────────────────────────────\n",
+    "❯\u{a0}\n",
+    "────────────────────────────────\n",
+);
+
+const TRAE_BUSY_COMPOSER_PANE: &str = concat!(
+    "▍ List the files in src/models with a one-line purpose each.\n",
+    "\n",
+    "◈ Any second now… (17s • ↓ 149 tokens • esc to interrupt)\n",
+    "──────────────────────────────────────────────── List src/models file purposes ─\n",
+    "❯ Explain this codebase\n",
+    "────────────────────────────────────────────────────────────────────────────────\n",
+    "  Test-O-New-Thinking high · Context 94% left · ~/Myspace/pmtui · ▧ Workspace Edit\n",
+);
+
 fn prompt_with_long_footer(prompt: &str, footer_lines: usize) -> String {
     let mut pane = format!("transcript above\n{prompt}\n");
     for i in 0..footer_lines {
@@ -104,6 +123,22 @@ fn s_refuses_a_pane_showing_claudes_survey() {
 }
 
 #[test]
+fn s_refuses_a_pane_showing_claudes_usage_limit() {
+    // A delayed turn parked behind a rate-limit banner would be reported as sent
+    // while it waits for an unrelated future reset.
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, pane, _, _) = send_app(dir.path(), CLAUDE_USAGE_LIMIT_PANE);
+    send_via_keys(&mut app, "try after the reset");
+
+    assert!(pane.sends().is_empty(), "bytes reached the limit banner");
+    assert!(
+        app.status.contains("usage limit reached"),
+        "status: {:?}",
+        app.status
+    );
+}
+
+#[test]
 fn s_accepts_a_prompt_visible_above_a_long_footer() {
     let dir = tempfile::tempdir().unwrap();
     let pane_text = prompt_with_long_footer("\u{276f}\u{a0}", 24);
@@ -170,6 +205,7 @@ fn parking_an_empty_task_message_returns_to_tasks_without_a_draft() {
     app.mode = UiMode::Sending {
         target: SendTarget {
             id: "bot".into(),
+            engine: None,
             root: PathBuf::from("/tmp"),
             session: "pm-bot".into(),
             agent_loop: true,
@@ -223,6 +259,65 @@ fn s_refuses_a_codex_approval_dialog() {
     let (mut app, pane, _, _) = send_app(dir.path(), CODEX_DIALOG_PANE);
     send_via_keys(&mut app, "yes, but rebase first");
     assert!(pane.sends().is_empty(), "bytes reached a codex dialog");
+}
+
+#[test]
+fn s_refuses_a_claude_dialog_even_when_a_stray_prompt_is_visible() {
+    let pane = concat!(
+        "● Write(hello.txt)\n",
+        "Do you want to create hello.txt?\n",
+        "❯  \n",
+        "❯ 1. Yes\n",
+        "  2. No\n",
+        "Esc to cancel · Tab to amend\n",
+    );
+    assert!(tmux::classify_dialog(pane).is_some(), "{pane}");
+    assert!(tmux::has_composer(pane), "{pane}");
+
+    assert_eq!(
+        send_decision(
+            &send_target(true),
+            &SendProbe {
+                alive: Some(true),
+                capture: Some(pane.into()),
+                ..Default::default()
+            }
+        ),
+        SendPlan::Refuse("dialog up — press Enter and answer it there".into())
+    );
+}
+
+#[test]
+fn s_refuses_a_trae_dialog_before_checking_for_a_prompt() {
+    let pane = concat!(
+        "────\n",
+        "❯ Explain this codebase\n",
+        "────\n",
+        "  ? for shortcuts\n",
+        "Hooks need review\n",
+        "1 hook is new or changed.\n",
+        "Hooks can run outside the sandbox after you trust them.\n",
+        "❯ 1. Review hooks\n",
+        "  2. Trust all and continue\n",
+        "  3. Continue without trusting (hooks won't run)\n",
+        "enter confirm | esc go back\n",
+    );
+    assert!(tmux::classify_dialog_for_engine(pane, Engine::Trae).is_some());
+    assert!(!tmux::has_composer_for_engine(pane, Engine::Trae));
+
+    let mut target = send_target(true);
+    target.engine = Some(Engine::Trae);
+    assert_eq!(
+        send_decision(
+            &target,
+            &SendProbe {
+                alive: Some(true),
+                capture: Some(pane.into()),
+                ..Default::default()
+            }
+        ),
+        SendPlan::Refuse("dialog up — press Enter and answer it there".into())
+    );
 }
 
 #[test]
@@ -299,6 +394,7 @@ fn stop_guard_is_keyed_to_the_composer_target_not_the_current_selection() {
     let dir = tempfile::tempdir().unwrap();
     let target = SendTarget {
         id: "bot".into(),
+        engine: None,
         root: dir.path().to_path_buf(),
         session: "pm-bot".into(),
         agent_loop: true,
@@ -552,6 +648,7 @@ fn send_refuses_during_the_chat_attach_intent_window() {
     chat_lock::mark(&paths, std::process::id(), "pm-bot", "pm-test", now).unwrap();
     let target = SendTarget {
         id: "bot".into(),
+        engine: None,
         root,
         session: "pm-bot".into(),
         agent_loop: true,
@@ -572,6 +669,7 @@ fn send_refuses_during_the_chat_attach_intent_window() {
 fn final_send_recheck_rejects_control_only_dead_attached_and_changed_panes() {
     let make_target = |root: &Path| SendTarget {
         id: "bot".into(),
+        engine: None,
         root: root.to_path_buf(),
         session: "pm-bot".into(),
         agent_loop: true,
@@ -609,6 +707,27 @@ fn final_send_recheck_rejects_control_only_dead_attached_and_changed_panes() {
         .unwrap_err();
     assert!(error.to_string().contains("pane changed"));
     assert!(changed_pane.sends().is_empty());
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = SendTarget {
+        engine: Some(Engine::Trae),
+        ..make_target(dir.path())
+    };
+    let dialog_with_prompt = concat!(
+        "Approve hooks?\n",
+        "❯  \n",
+        "❯ 1. Yes\n",
+        "  2. No\n",
+        "Esc to cancel\n",
+    );
+    let dialog = FakePane::sendable("pm-bot", dialog_with_prompt);
+    let mut gone = app_with_driver(vec![], UiMode::Normal, Box::new(dialog.clone()));
+    let error = gone.deliver(&target, "hello").unwrap_err();
+    assert!(error.to_string().contains("pane changed"));
+    assert!(
+        dialog.sends().is_empty(),
+        "the final recheck lost the target engine and typed into a dialog"
+    );
 }
 
 #[test]
@@ -654,6 +773,8 @@ fn every_send_refusal_leads_with_its_verdict() {
     // the TAIL, so at 80 columns only the first ~26 characters are guaranteed to be
     // read. The verdict has to be inside them.
     let t = send_target(true);
+    let mut trae = t.clone();
+    trae.engine = Some(Engine::Trae);
     let cases: Vec<(SendPlan, &str)> = vec![
         (send_precheck("").unwrap(), "nothing typed"),
         (
@@ -714,7 +835,7 @@ fn every_send_refusal_leads_with_its_verdict() {
         ),
         (
             send_decision(
-                &t,
+                &trae,
                 &SendProbe {
                     alive: Some(true),
                     capture: Some(CLAUDE_DIALOG_PANE.into()),
@@ -749,6 +870,32 @@ fn every_send_refusal_leads_with_its_verdict() {
 }
 
 #[test]
+fn numbered_transcript_above_idle_prompt_does_not_block_generic_send() {
+    let pane = concat!(
+        "Pick one if you agree:\n",
+        " ❯ 1. Yes\n",
+        "   2. No\n",
+        "\n",
+        "done\n",
+        "────────────────────────────────\n",
+        "❯  \n",
+        "────────────────────────────────\n",
+    );
+
+    assert_eq!(
+        send_decision(
+            &send_target(true),
+            &SendProbe {
+                alive: Some(true),
+                capture: Some(pane.into()),
+                ..Default::default()
+            }
+        ),
+        SendPlan::Send("sent \u{2192} bot".into())
+    );
+}
+
+#[test]
 fn a_standard_row_is_told_enter_opens_one_and_an_autopilot_row_that_pmd_will() {
     // The same fact, said two ways, because the way FORWARD differs: with autopilot
     // off nothing is going to start an agent for you.
@@ -777,6 +924,24 @@ fn a_working_pane_is_sent_to_and_the_receipt_says_so() {
             &SendProbe {
                 alive: Some(true),
                 capture: Some(busy.into()),
+                ..Default::default()
+            }
+        ),
+        SendPlan::Send("sent \u{2192} bot (it was working)".into())
+    );
+}
+
+#[test]
+fn a_working_trae_pane_uses_trae_activity_before_reporting_sent() {
+    let mut target = send_target(true);
+    target.engine = Some(Engine::Trae);
+
+    assert_eq!(
+        send_decision(
+            &target,
+            &SendProbe {
+                alive: Some(true),
+                capture: Some(TRAE_BUSY_COMPOSER_PANE.into()),
                 ..Default::default()
             }
         ),

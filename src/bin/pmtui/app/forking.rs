@@ -144,10 +144,25 @@ impl App {
                 return;
             }
         };
+        let engine = match (ledger.as_ref().map(|state| state.engine), source.engine) {
+            (Some(engine), _) | (None, Some(engine)) => engine,
+            (None, None) => Engine::Claude,
+        };
+        let turn_hook_runnable =
+            agent_manager::worker::turn_hook_runnable_for(engine, self.pmtui_bin.as_deref());
+        if engine == Engine::Trae && !turn_hook_runnable {
+            self.status = format!(
+                "{}: cannot fork TraeX without working pmtui hooks (PMTUI_BIN unavailable or hooks disabled)",
+                source.id
+            );
+            return;
+        }
         let ledger_id = ledger
             .as_ref()
             .and_then(|state| state.conversation_id.as_deref());
         let saved = match (ledger_id, source.conversation_id.as_deref()) {
+            // TRAE can save a caller-chosen name here; only its hook below identifies a thread.
+            _ if engine == Engine::Trae => None,
             (Some(ledger), Some(registry)) if ledger != registry => {
                 self.status = format!(
                     "{}: ledger conversation {ledger} disagrees with registry {registry}",
@@ -158,17 +173,27 @@ impl App {
             (Some(id), _) | (None, Some(id)) => Some(id.to_string()),
             (None, None) => None,
         };
-        let engine = match (ledger.as_ref().map(|state| state.engine), source.engine) {
-            (Some(ledger), Some(registry)) if ledger != registry => {
-                self.status = format!(
-                    "{}: ledger engine {ledger:?} disagrees with registry {registry:?}",
-                    source.id
-                );
-                return;
-            }
-            (Some(engine), _) | (None, Some(engine)) => engine,
-            (None, None) => Engine::Claude,
-        };
+        // Preserve the conversation refusal's precedence for Claude/Codex while allowing
+        // TraeX to disregard saved names that are not engine-reported thread ids.
+        if let (Some(ledger), Some(registry)) =
+            (ledger.as_ref().map(|state| state.engine), source.engine)
+            && ledger != registry
+        {
+            self.status = format!(
+                "{}: ledger engine {ledger:?} disagrees with registry {registry:?}",
+                source.id
+            );
+            return;
+        }
+        if engine == Engine::Trae
+            && !agent_manager::worker::turn_hook_runnable_for(engine, self.pmtui_bin.as_deref())
+        {
+            self.status = format!(
+                "{}: cannot fork TraeX without working pmtui hooks (PMTUI_BIN unavailable or hooks disabled)",
+                source.id
+            );
+            return;
+        }
         // A Claude id is minted before the first turn, and Claude writes no transcript until
         // that turn runs. `--resume` of such an id opens an empty session, so a confidently
         // absent transcript is a session nobody has messaged yet.
@@ -290,16 +315,20 @@ impl App {
             }
         };
 
-        let identity_file = fork.paths.daemon_dir().join("fork-conversation-id");
+        let identity_file = if engine == Engine::Trae {
+            fork.paths.codex_conversation_id()
+        } else {
+            fork.paths.daemon_dir().join("fork-conversation-id")
+        };
         let argv = agent_manager::worker::build_fork_command(
             engine,
             &source_conversation,
-            agent_manager::worker::turn_hook_enabled().then_some(&fork.paths.turn_signal()),
+            turn_hook_runnable.then_some(&fork.paths.turn_signal()),
             (engine == Engine::Claude).then_some(identity_file.as_path()),
             source.worker_model.as_deref(),
         );
         let env = self.managed_env(&fork.child_id, &fork.root);
-        crate::session::install_spawn_skill(&fork.root, engine, &env);
+        crate::session::install_prelaunch_skills(&fork.root, engine, &env);
         let launched = self
             .agent_tmux
             .launch_interactive(&fork.session, &fork.root, &argv, &env);
@@ -392,12 +421,13 @@ impl App {
             let probe = match engine {
                 Engine::Claude => self.agent_tmux.claude_session_id(session, identity_file),
                 Engine::Codex => self.agent_tmux.codex_session_id(session, root),
+                Engine::Trae => Ok(agent_manager::state::codex_identity::read_at(identity_file)),
             };
             match probe {
                 // Codex holds the source rollout open while it copies the history, so seeing
                 // it is a startup state. Claude's hook reports once, so its answer is final.
                 Ok(Some(id)) if id.eq_ignore_ascii_case(source_id) => {
-                    if engine == Engine::Claude {
+                    if engine != Engine::Codex {
                         anyhow::bail!("engine returned the source conversation id");
                     }
                     last_error = Some(anyhow::anyhow!(
@@ -477,18 +507,20 @@ impl App {
         engine: Engine,
         session: &str,
     ) -> bool {
-        let Some(first) = self.idle_source_fingerprint(source, session) else {
+        let Some(first) = self.idle_source_fingerprint(source, engine, session) else {
             return false;
         };
         std::thread::sleep(FORK_IDLE_RECHECK);
-        let Some(second) = self.idle_source_fingerprint(source, session) else {
+        let Some(second) = self.idle_source_fingerprint(source, engine, session) else {
             return false;
         };
-        let hook_working =
-            ProjectView::read_agent_loop(&source.id, paths, source.enabled, SystemClock.now())
-                .agent_working;
+        let source_view =
+            ProjectView::read_agent_loop(&source.id, paths, source.enabled, SystemClock.now());
+        let hook_working = source_view.agent_working;
+        let pmd_driven = agent_manager::daemon::pmd_drives_row(source_view.mode, source_view.tier);
         if first != second
-            || super::refresh::confirmed_idle_activity(Some(engine), hook_working) != Some(false)
+            || super::refresh::confirmed_idle_activity(pmd_driven, Some(engine), hook_working)
+                != Some(false)
         {
             self.status = format!("{}: still working; fork once it is idle", source.id);
             return false;
@@ -497,22 +529,46 @@ impl App {
     }
 
     /// The transcript fingerprint of one Idle capture of the source; `None` records a refusal.
-    fn idle_source_fingerprint(&mut self, source: &ProjectEntry, session: &str) -> Option<u64> {
-        match self.agent_tmux.capture_tail(session, 40) {
-            Ok(capture) if tmux::classify_pane(&capture) == tmux::PaneActivity::Idle => {
-                Some(tmux::idle_fingerprint(&capture))
+    fn idle_source_fingerprint(
+        &mut self,
+        source: &ProjectEntry,
+        engine: Engine,
+        session: &str,
+    ) -> Option<u64> {
+        let capture = if engine == Engine::Trae {
+            match self.agent_tmux.capture_tail(session, 40) {
+                Ok(capture) => capture,
+                Err(error) => {
+                    self.status = format!("{}: could not read its terminal ({error})", source.id);
+                    return None;
+                }
             }
-            Ok(_) => {
+        } else {
+            match self.agent_tmux.capture_tail_styled(session, 40) {
+                Ok(styled) if tmux::classify_pane_styled(&styled) == tmux::PaneActivity::Idle => {
+                    return Some(tmux::idle_fingerprint_for_engine(
+                        &tmux::unstyled(&styled),
+                        engine,
+                    ));
+                }
+                Ok(_) => {
+                    self.status = format!("{}: still working; fork once it is idle", source.id);
+                    return None;
+                }
+                Err(error) => {
+                    self.status = format!("{}: could not read its terminal ({error})", source.id);
+                    return None;
+                }
+            }
+        };
+        match tmux::classify_pane_for_engine(&capture, engine) {
+            tmux::PaneActivity::Idle => Some(tmux::idle_fingerprint_for_engine(&capture, engine)),
+            tmux::PaneActivity::Busy => {
                 self.status = format!("{}: still working; fork once it is idle", source.id);
-                None
-            }
-            Err(error) => {
-                self.status = format!("{}: could not read its terminal ({error})", source.id);
                 None
             }
         }
     }
-
     /// Name the conversation the fork branches.
     ///
     /// A live Codex source is identified from its exact process, which is the only record a
@@ -527,6 +583,14 @@ impl App {
         terminal: SourceTerminal,
         saved: Option<String>,
     ) -> Option<String> {
+        if engine == Engine::Trae {
+            // Standard sessions have no daemon to copy the hook's identity into a ledger.
+            let identity = read_captured_conversation_id(&entry_state_paths(source));
+            if identity.is_none() {
+                self.refuse_unstarted_fork(&source.id);
+            }
+            return identity;
+        }
         if engine == Engine::Codex && matches!(terminal, SourceTerminal::Idle) {
             let session = session_name(&source.id, &source.root);
             match self.agent_tmux.codex_session_id(&session, &source.root) {

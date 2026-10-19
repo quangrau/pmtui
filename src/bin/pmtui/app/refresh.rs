@@ -33,6 +33,7 @@ enum ActivityObservation {
 }
 
 fn merge_activity(
+    pmd_driven: bool,
     engine: Option<Engine>,
     hook_working: Option<bool>,
     observation: ActivityObservation,
@@ -45,9 +46,12 @@ fn merge_activity(
         // Claude can leave its bare prompt visible through a silent tool call, so its
         // hook-backed in-flight signal remains authoritative. Codex paints an explicit busy
         // banner while a turn runs; after two byte-stable idle-composer captures, an unchanged
-        // optional notify byte is stale rather than stronger evidence of work.
+        // optional notify byte is stale rather than stronger evidence of work. Only TraeX
+        // drops retained hook authority when pmd no longer drives the row.
         ActivityObservation::IdleConfirmed
-            if hook_working == Some(true) && engine != Some(Engine::Codex) =>
+            if (engine != Some(Engine::Trae) || pmd_driven)
+                && hook_working == Some(true)
+                && engine != Some(Engine::Codex) =>
         {
             Some(true)
         }
@@ -58,10 +62,16 @@ fn merge_activity(
 /// [`merge_activity`] for a caller that ran its own two-capture idle confirmation, so the fork's
 /// source recheck weighs the turn hook exactly as the dashboard row does.
 pub(super) fn confirmed_idle_activity(
+    pmd_driven: bool,
     engine: Option<Engine>,
     hook_working: Option<bool>,
 ) -> Option<bool> {
-    merge_activity(engine, hook_working, ActivityObservation::IdleConfirmed)
+    merge_activity(
+        pmd_driven,
+        engine,
+        hook_working,
+        ActivityObservation::IdleConfirmed,
+    )
 }
 
 impl App {
@@ -161,11 +171,19 @@ impl App {
                 v.job = p.is_job();
                 // WHAT THERE IS TO APPLY. Read from the job's own worktree, so a row that committed
                 // offers `a` and one that did not does not. A chat row never has either.
+                //
+                // `committed_tip`, NOT `collect`: this frame reads the commit and the branch and
+                // nothing else, while `collect` also runs a `git diff` and a `git status` that walks
+                // the whole working tree for a `dirty` flag thrown away two lines later. That was
+                // three git processes per job row, twice a second, for as long as the row existed —
+                // and rows that ended badly stay for a human, so it never stopped. The branch needs
+                // no git at all: it is on the registry row the worktree was built from.
                 if v.job {
-                    let work =
-                        super::job_worktree(p).map(|wt| agent_manager::worktree::collect(&wt));
-                    v.job_commit = work.as_ref().and_then(|found| found.commit.clone());
-                    v.job_branch = work.map(|found| found.branch);
+                    let worktree = super::job_worktree(p);
+                    v.job_commit = worktree
+                        .as_ref()
+                        .and_then(agent_manager::worktree::committed_tip);
+                    v.job_branch = worktree.map(|worktree| worktree.branch);
                 }
                 v.incomplete_fork =
                     !v.spawn_staged && super::forking::incomplete_fork_refusal(p).is_some();
@@ -209,32 +227,52 @@ impl App {
                     // an outstanding turn (`Some(true)`) is never softened by an
                     // Idle-looking frame, because Claude can draw its bare prompt mid-stream.
                     //
-                    // An Idle pane is trusted only after two byte-stable captures. For
-                    // Standard/unknown rows this supplies the whole answer; for Autopilot it
-                    // confirms idle only when the hook did not already prove a turn is active.
+                    // An Idle pane is trusted only after two byte-stable captures. Claude's
+                    // retained hook can still prove a silent turn is active; TraeX requires
+                    // pmd to drive the row before trusting that retained baseline.
                     // A capture error on an otherwise-live pane stays working rather than
                     // preserving a stale completed-turn/idle value.
                     let hook_working = v.agent_working;
+                    let pmd_driven = agent_manager::daemon::pmd_drives_row(v.mode, v.tier);
                     v.agent_working = match &live_pane {
-                        None => {
-                            merge_activity(v.engine, hook_working, ActivityObservation::Missing)
-                        }
-                        Some(pane) => match driver.capture_tail(pane, ACTIVITY_CAPTURE_LINES) {
+                        None => merge_activity(
+                            pmd_driven,
+                            v.engine,
+                            hook_working,
+                            ActivityObservation::Missing,
+                        ),
+                        Some(pane) => match driver
+                            .capture_tail_styled(pane, ACTIVITY_CAPTURE_LINES)
+                            .map(|styled| {
+                                let cap = tmux::unstyled(&styled);
+                                let activity = match v.engine {
+                                    Some(Engine::Trae) => {
+                                        tmux::classify_pane_for_engine(&cap, Engine::Trae)
+                                    }
+                                    _ => tmux::classify_pane_styled(&styled),
+                                };
+                                (activity, cap)
+                            }) {
                             Err(_) => merge_activity(
+                                pmd_driven,
                                 v.engine,
                                 hook_working,
                                 ActivityObservation::Unreadable,
                             ),
-                            Ok(cap) if tmux::classify_pane(&cap) == tmux::PaneActivity::Busy => {
-                                merge_activity(v.engine, hook_working, ActivityObservation::Busy)
-                            }
-                            Ok(cap) => {
+                            Ok((tmux::PaneActivity::Busy, _)) => merge_activity(
+                                pmd_driven,
+                                v.engine,
+                                hook_working,
+                                ActivityObservation::Busy,
+                            ),
+                            Ok((tmux::PaneActivity::Idle, cap)) => {
                                 let (fp, count) = idle_gate_step(
                                     prev_gate.get(&p.id).copied(),
-                                    tmux::idle_fingerprint(&cap),
+                                    tmux::idle_fingerprint_for_engine(&cap, v.engine),
                                 );
                                 new_gate.insert(p.id.clone(), (fp, count));
                                 merge_activity(
+                                    pmd_driven,
                                     v.engine,
                                     hook_working,
                                     if count < ACTIVITY_IDLE_CONFIRMATIONS {
@@ -355,6 +393,7 @@ impl App {
         // adopted/minted id landing in the ledger).
         let captured = read_captured_conversation_id(&session_paths);
         let effective = effective_id(
+            e.engine.unwrap_or(Engine::Claude),
             ledger.conversation_id.as_deref(),
             e.conversation_id.as_deref(),
             captured.as_deref(),
@@ -389,7 +428,13 @@ impl App {
                 let turn_signal = session_paths.turn_signal();
                 let env = self.managed_env(&id, &e.root);
                 self.pending_chat = Some(ChatReq {
-                    argv: build_chat(engine, &cid, worker_model.as_deref(), &turn_signal),
+                    argv: build_chat_with_pmtui_bin(
+                        engine,
+                        &cid,
+                        worker_model.as_deref(),
+                        &turn_signal,
+                        env.pmtui_bin.as_deref(),
+                    ),
                     session_paths,
                     // The REPL's cwd is the PROJECT ROOT (`e.root`), never the
                     // per-session state dir in `session_paths`.
@@ -507,98 +552,4 @@ pub(crate) fn session_work_summary(entry: &ProjectEntry, paths: &ProjectPaths) -
 }
 
 #[cfg(test)]
-mod idle_gate_tests {
-    use agent_manager::registry::Engine;
-
-    use super::{ACTIVITY_IDLE_CONFIRMATIONS, ActivityObservation, idle_gate_step, merge_activity};
-
-    #[test]
-    fn the_idle_gate_confirms_only_a_byte_stable_transcript() {
-        // m76. This is the guard that keeps an idle-at-prompt claude reading idle WITHOUT flipping a
-        // WORKING one idle mid-stream (m70 streaming-blindness). The rule: a pane that classifies Idle
-        // is only trusted as idle after ACTIVITY_IDLE_CONFIRMATIONS byte-stable observations.
-
-        // First Idle observation ARMS the gate (count 1) but does not yet confirm idle.
-        let (fp, c) = idle_gate_step(None, 42);
-        assert_eq!((fp, c), (42, 1));
-        assert!(
-            c < ACTIVITY_IDLE_CONFIRMATIONS,
-            "one observation is not idle yet ⇒ still running"
-        );
-
-        // A SECOND observation with the SAME fingerprint confirms idle.
-        let (fp2, c2) = idle_gate_step(Some((42, 1)), 42);
-        assert_eq!((fp2, c2), (42, 2));
-        assert!(
-            c2 >= ACTIVITY_IDLE_CONFIRMATIONS,
-            "two stable observations ⇒ confirmed idle"
-        );
-
-        // A CHANGED fingerprint — a streaming transcript growing between captures — RESETS the count,
-        // so a mid-stream agent never reaches the threshold and never falsely reads idle.
-        let (fp3, c3) = idle_gate_step(Some((42, 5)), 99);
-        assert_eq!((fp3, c3), (99, 1));
-        assert!(
-            c3 < ACTIVITY_IDLE_CONFIRMATIONS,
-            "a changed transcript re-arms ⇒ stays running"
-        );
-    }
-
-    #[test]
-    fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
-        for hook in [None, Some(false), Some(true)] {
-            assert_eq!(
-                merge_activity(Some(Engine::Claude), hook, ActivityObservation::Missing),
-                Some(false),
-                "no live pane is idle regardless of stale hook state"
-            );
-            for active in [
-                ActivityObservation::Unreadable,
-                ActivityObservation::Busy,
-                ActivityObservation::IdleUnconfirmed,
-            ] {
-                assert_eq!(
-                    merge_activity(Some(Engine::Claude), hook, active),
-                    Some(true),
-                    "a live pane without confirmed idleness stays working: {hook:?} {active:?}"
-                );
-            }
-        }
-        assert_eq!(
-            merge_activity(
-                Some(Engine::Claude),
-                Some(true),
-                ActivityObservation::IdleConfirmed
-            ),
-            Some(true),
-            "an outstanding hook-backed turn cannot be softened by pixels"
-        );
-        assert_eq!(
-            merge_activity(
-                Some(Engine::Claude),
-                Some(false),
-                ActivityObservation::IdleConfirmed
-            ),
-            Some(false),
-            "a completed turn plus confirmed idle pane is idle"
-        );
-        assert_eq!(
-            merge_activity(
-                Some(Engine::Claude),
-                None,
-                ActivityObservation::IdleConfirmed
-            ),
-            Some(false),
-            "without a hook, stable pane content confirms idle"
-        );
-        assert_eq!(
-            merge_activity(
-                Some(Engine::Codex),
-                Some(true),
-                ActivityObservation::IdleConfirmed
-            ),
-            Some(false),
-            "Codex's stable idle composer overrides a stale optional notify byte"
-        );
-    }
-}
+mod tests;

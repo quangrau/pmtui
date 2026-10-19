@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::clock::Epoch;
+use crate::registry::Engine;
 
 use super::dialog_keys;
 use super::driver::{Driver, StepHandle};
@@ -166,31 +167,19 @@ pub(super) fn launched_binary(argv: &[String]) -> &str {
 /// Whether `bin` names an executable a pane could run, searching `path` when one is given and
 /// this process's own `PATH` otherwise. A walk rather than `sh -c 'command -v'`, because the
 /// search PATH and the PATH that finds `sh` are not the same PATH once the caller supplies one.
+///
+/// FAIL-OPEN on an unreadable `PATH`, which is a CHANGE: this used to answer "not installed", and
+/// `launch_interactive` refuses a launch on that answer — so a `pmd` whose unit exported no `PATH`
+/// was told its agent was missing while `job_engine`'s identical probe, which fails open on purpose,
+/// kept consulting as though it were there. One question must not have two answers, and "I could not
+/// read PATH" is not evidence that a program is absent. The search itself is [`crate::which`].
 pub(super) fn resolves_on_path(bin: &str, path: Option<&str>) -> bool {
-    if bin.contains('/') {
-        return executable_file(Path::new(bin));
+    let supplied = path.map(std::ffi::OsString::from);
+    match supplied {
+        Some(path) => crate::which::on_path(bin, Some(&path)),
+        None => crate::which::on_env_path(bin),
     }
-    let search = match path {
-        Some(path) => std::ffi::OsString::from(path),
-        None => match std::env::var_os("PATH") {
-            Some(path) => path,
-            None => return false,
-        },
-    };
-    std::env::split_paths(&search).any(|dir| executable_file(&dir.join(bin)))
-}
-
-#[cfg(unix)]
-fn executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::metadata(path)
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn executable_file(path: &Path) -> bool {
-    path.is_file()
+    .or_unknown()
 }
 
 pub(super) fn pane_dimension(value: Option<&str>, dflt: u16, floor: u16) -> u16 {
@@ -878,6 +867,15 @@ impl Driver for TmuxDriver {
     /// because copy-mode swallows the submitting Enter while `paste-buffer` still reports success —
     /// the silent-payload-loss bug that made a parked human answer disappear.
     fn send_keys(&self, session: &str, text: &str) -> Result<()> {
+        self.send_keys_for_engine(session, text, None)
+    }
+
+    fn send_keys_for_engine(
+        &self,
+        session: &str,
+        text: &str,
+        engine: Option<Engine>,
+    ) -> Result<()> {
         let target = exact_pane(session);
         // A pane left in COPY-MODE eats the nudge (see `Driver::pane_in_mode` for the
         // measurements), and the paste path does it while still returning `Ok` — so leave
@@ -917,7 +915,10 @@ impl Driver for TmuxDriver {
         const CODEX_SUBMIT_RECHECK_GUARD: Duration = Duration::from_millis(300);
         const CODEX_SUBMIT_ATTEMPTS: usize = 3;
         let uses_paste_buffer = text.contains('\n') || text.len() > LITERAL_MAX;
-        let codex = self.pane_current_command(session)?.as_deref() == Some("codex");
+        let pane_command = self.pane_current_command(session)?;
+        // TraeX can quote Codex output; its row never inherits Codex retry keys. Other callers
+        // retain the existing live-process check, including probe errors before any input.
+        let codex = engine != Some(Engine::Trae) && pane_command.as_deref() == Some("codex");
         let codex_paste = uses_paste_buffer && codex;
         if !uses_paste_buffer {
             // `-l` sends the text literally (no key-name interpretation); `--` guards a leading dash.

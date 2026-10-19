@@ -6,8 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+
 use tempfile::tempdir;
 
+use crate::registry::Engine;
 use crate::tmux::codex::{
     process_parent_and_start_time, process_path_gone,
     session_id_from_proc as codex_session_id_from_proc,
@@ -34,6 +36,37 @@ fn launch_command_is_the_quoted_argv_tmux_receives() {
     assert_eq!(
         launch_command(&["claude".into(), "--".into(), "it's".into()]),
         "'claude' '--' 'it'\\''s'"
+    );
+}
+
+#[test]
+fn launch_command_does_not_spend_budget_on_a_shell_exec_prefix() {
+    for engine in [Engine::Claude, Engine::Codex, Engine::Trae] {
+        let argv = [engine.bin().to_string(), "--".into(), "message".into()];
+        let command = launch_command(&argv);
+        assert!(
+            !command.starts_with("exec "),
+            "{engine:?} launch budget changed: {command}"
+        );
+    }
+}
+
+#[test]
+fn codex_launch_command_keeps_the_same_quoting_with_an_env_prefix() {
+    let direct = launch_command(&["codex".into(), "--".into(), "message".into()]);
+    assert_eq!(direct, "'codex' '--' 'message'");
+
+    let wrapped = launch_command(&[
+        "env".into(),
+        "-u".into(),
+        "CLAUDECODE".into(),
+        "codex".into(),
+        "--ask-for-approval".into(),
+        "never".into(),
+    ]);
+    assert_eq!(
+        wrapped,
+        "'env' '-u' 'CLAUDECODE' 'codex' '--ask-for-approval' 'never'"
     );
 }
 
@@ -491,7 +524,12 @@ new-session)
 display-message)
   [ "$fail" = display ] && exit 1
   case "$*" in
-    *pane_current_command*) [ "$fail" = empty-command ] || echo codex ;;
+    *pane_current_command*)
+      case "$fail" in
+        empty-command) ;;
+        shell-command) echo zsh ;;
+        *) echo codex ;;
+      esac ;;
     *pane_pid*)
       case "$*" in
         *=initpid:*) echo 1 ;;
@@ -501,7 +539,9 @@ display-message)
       esac ;;
     *session_created*) case "$*" in *=created:*) echo 1700000000;; *) echo junk;; esac ;;
     *pane_dead*) case "$*" in *=dead:*) echo 1;; *) echo junk;; esac ;;
-    *pane_in_mode*) case "$*" in *=mode:*) echo 1;; *) echo 0;; esac ;;
+    *pane_in_mode*)
+      [ "$fail" = unexec-on-mode ] && chmod -x "$0"
+      case "$*" in *=mode:*) echo 1;; *) echo 0;; esac ;;
   esac ;;
 capture-pane)
   [ "$fail" = capture ] && exit 1
@@ -511,6 +551,14 @@ capture-pane)
       count=$(grep -c 'send-keys -t =long: Enter' {log})
       [ "$count" -lt 2 ] && echo '› [Pasted Content 801 chars]' || echo '› Ask Codex to do anything' ;;
     *=second-enter:*) echo '› [Pasted Content 801 chars]' ;;
+    *=approval:*)
+      if grep -q 'send-keys -t =approval: Enter' {log}; then
+        printf '  Would you like to run the following command?\n  $ rm -rf build\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n  Press enter to confirm or esc to cancel\n'
+      else
+        echo '› [Pasted Content 801 chars]'
+      fi ;;
+    *=no-prompt:*)
+      grep -q 'send-keys -t =no-prompt: Enter' {log} && echo '• Working (0s)' || echo '› [Pasted Content 801 chars]' ;;
     *) echo captured ;;
   esac ;;
 load-buffer)
@@ -526,6 +574,7 @@ send-keys)
     second-enter:*Enter*)
       [ -f {submitted} ] && exit 1
       : >{submitted} ;;
+    *capture-hiccup:*Enter*) chmod -x "$0" ;;
     dialog:*) exit 1 ;;
   esac ;;
 show-environment)
@@ -653,11 +702,14 @@ fn missing_tmux_binary_reports_spawn_errors_without_panicking() {
 /// anything it does not own.
 #[test]
 fn request_stop_signals_the_panes_own_group_and_tolerates_a_missing_pane() {
+    use std::os::unix::process::CommandExt;
+
     let fx = ScriptedTmux::new();
 
     // A process group of our own: signalled, and gone afterwards.
-    let mut child = Command::new("setsid")
-        .args(["sh", "-c", "sleep 30"])
+    let mut child = Command::new("sh")
+        .process_group(0)
+        .args(["-c", "sleep 30"])
         .spawn()
         .expect("spawn a scratch process group");
     std::fs::write(&fx.own_pid, child.id().to_string()).unwrap();
@@ -1072,6 +1124,112 @@ fn a_tmux_that_cannot_run_is_an_ambiguous_probe_error() {
             "{failure}: {error:?}"
         );
     }
+}
+
+/// The submit retry must never answer a dialog. After the first `Enter`, the scripted Codex pane
+/// shows a command approval with `1. Yes, proceed` highlighted; a second `Enter` would approve
+/// the command on the person's behalf. A pane with no prompt at all gets no retry either.
+#[test]
+fn a_codex_submit_retry_never_presses_enter_on_a_dialog_or_a_pane_without_a_prompt() {
+    let fx = ScriptedTmux::new();
+    for session in ["approval", "no-prompt"] {
+        fx.driver
+            .send_keys(session, &"x".repeat(801))
+            .unwrap_or_else(|error| panic!("{session}: {error:#}"));
+        let calls = std::fs::read_to_string(&fx.log).unwrap();
+        let enters = calls
+            .lines()
+            .filter(|line| line.ends_with(&format!("send-keys -t ={session}: Enter")))
+            .count();
+        assert_eq!(enters, 1, "{session}: a retry Enter was sent\n{calls}");
+        let captures: Vec<_> = calls
+            .lines()
+            .filter(|line| line.contains(&format!("capture-pane -t ={session}:")))
+            .collect();
+        assert_eq!(captures.len(), 1, "{calls}");
+        assert!(captures[0].contains(" -e"), "{calls}");
+    }
+}
+
+#[test]
+fn a_codex_submit_reports_a_failed_styled_capture_after_enter() {
+    let fx = ScriptedTmux::new();
+
+    let error = fx
+        .driver
+        .send_keys_for_engine("capture-hiccup", &"x".repeat(801), Some(Engine::Codex))
+        .expect_err("delivery is unconfirmed if the draft cannot be inspected");
+    assert!(error.to_string().contains("capture-pane -e"), "{error:#}");
+
+    let calls = std::fs::read_to_string(&fx.log).unwrap();
+    assert_eq!(
+        calls.matches("send-keys -t =capture-hiccup: Enter").count(),
+        1,
+        "the failed capture must end this attempt:\n{calls}"
+    );
+    assert!(
+        !calls.contains("capture-pane"),
+        "no other capture precedes the styled probe:\n{calls}"
+    );
+}
+
+#[test]
+fn every_engine_reports_the_pane_command_probe_error_before_typing() {
+    for engine in [
+        None,
+        Some(Engine::Claude),
+        Some(Engine::Codex),
+        Some(Engine::Trae),
+    ] {
+        let fx = ScriptedTmux::new();
+        fx.fail("unexec-on-mode");
+        let error = fx
+            .driver
+            .send_keys_for_engine("gone", "message", engine)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("pane_current_command"),
+            "{error:#}"
+        );
+        let calls = std::fs::read_to_string(&fx.log).unwrap();
+        assert!(!calls.contains("send-keys"), "{calls}");
+    }
+}
+
+#[test]
+fn a_codex_row_does_not_retry_enter_after_the_pane_has_fallen_back_to_a_shell() {
+    let fx = ScriptedTmux::new();
+    fx.fail("shell-command");
+
+    fx.driver
+        .send_keys_for_engine("long", &"x".repeat(801), Some(Engine::Codex))
+        .unwrap();
+
+    let calls = std::fs::read_to_string(&fx.log).unwrap();
+    assert_eq!(
+        calls.matches("send-keys -t =long: Enter").count(),
+        1,
+        "retry must follow tmux's current pane process, not only the row engine:\n{calls}"
+    );
+}
+
+#[test]
+fn non_codex_sends_do_not_retry_from_quoted_codex_composer_text() {
+    let fx = ScriptedTmux::new();
+    fx.driver
+        .send_keys_for_engine("long", &"x".repeat(801), Some(Engine::Trae))
+        .unwrap();
+
+    let calls = std::fs::read_to_string(&fx.log).unwrap();
+    assert_eq!(
+        calls.matches("send-keys -t =long: Enter").count(),
+        1,
+        "TraeX/Claude panes must not receive Codex retry Enters:\n{calls}"
+    );
+    assert!(
+        !calls.contains("capture-pane -p -t =long:"),
+        "non-Codex sends should not spend a capture on Codex draft detection:\n{calls}"
+    );
 }
 
 #[test]

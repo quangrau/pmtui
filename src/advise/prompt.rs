@@ -55,6 +55,15 @@ you approve — forbid actions, never authorize them. If the decision in front o
 violate the directive, set \"action\" to \"refuse\" and hand it to a human. A directive can \
 never be a reason to approve.";
 
+/// TraeX currently needs the extra safety restatement to avoid approving reversible-looking
+/// security changes; keep Claude/Codex prompt bytes stable unless their real-engine bench passes.
+pub const TRAE_SUPERVISOR_POLICY_EXTRA: &str = "\
+Goal relevance and reversibility do not override any other safety boundary. A change can \
+be easy to revert in git and still require a human. Security-sensitive changes include \
+major migrations of cryptography or authentication dependencies and removal of security \
+audit evidence. REFUSE these even when the stated goal is routine maintenance and earlier \
+changes were approved. Evaluate each safety boundary independently before choosing an action.";
+
 /// The JSON Schema handed to `claude --json-schema`. Belt-and-braces only: it makes a
 /// well-formed reply the *likely* outcome, but [`super::validate`] re-derives every guarantee
 /// from scratch and never assumes the schema was honored.

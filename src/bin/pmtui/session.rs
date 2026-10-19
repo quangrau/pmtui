@@ -107,7 +107,7 @@ pub(crate) struct ChatReq {
     pub(crate) socket: String,
     /// The unified `pm-…` terminal. Ctrl+q detaches without ending its process.
     pub(crate) session: String,
-    /// The row's engine, so a launch ships the spawn skill in the form that engine discovers.
+    /// The row's engine, so a launch ships prelaunch skills in the form it discovers.
     pub(crate) engine: Engine,
     /// Who the terminal belongs to, applied to it if this request launches it
     /// ([`App::managed_env`]).
@@ -136,12 +136,16 @@ pub(crate) struct CreateChatReq {
     pub(crate) env: tmux::ManagedEnv,
 }
 
-/// Ship the pmtui-spawn skill into `root` before pmtui launches a terminal there with `env`
-/// ([`agent_manager::skills::install_spawn_skill_for_launch`]: nothing when `env` names no pmtui).
+/// Ship only the skills that must exist before this launch starts: TraeX's worker protocol because
+/// it snapshots project skills at startup, and the spawn helper only when `$PMTUI_BIN` is available.
 ///
 /// Fail-open: a failed install never blocks the launch, and pmtui cannot print over its live
-/// dashboard, so `pmd doctor` is where a missing or stale spawn skill surfaces.
-pub(crate) fn install_spawn_skill(root: &Path, engine: Engine, env: &tmux::ManagedEnv) {
+/// dashboard, so `pmd doctor` is where a missing or stale skill surfaces.
+pub(crate) fn install_prelaunch_skills(root: &Path, engine: Engine, env: &tmux::ManagedEnv) {
+    let paths = ProjectPaths::new(root);
+    if engine == Engine::Trae {
+        let _ = agent_manager::skills::install_worker_skill(&paths, engine);
+    }
     let _ = agent_manager::skills::install_spawn_skill_for_launch(root, engine, env);
 }
 
@@ -155,47 +159,79 @@ pub(crate) fn install_spawn_skill(root: &Path, engine: Engine, env: &tmux::Manag
 ///   run inside a Claude Code session — exactly like the poll worker and the
 ///   verified spike; without it the child refuses to start a nested session.
 /// - `Engine::Codex` → `codex resume <id>` (NO `exec`; that is the headless path).
+/// - `Engine::Trae` → `traex resume <id>` (NO `-p`; in TRAE 2.0 that selects a profile). `<id>` is
+///   the thread id TraeX's hook reported, never a `--session-id` name: TraeX cannot resume a name.
+#[cfg(test)]
 pub(crate) fn build_chat(
     engine: Engine,
     conversation_id: &str,
     model: Option<&str>,
     turn_signal: &Path,
 ) -> Vec<String> {
+    build_chat_with_pmtui_bin(
+        engine,
+        conversation_id,
+        model,
+        turn_signal,
+        Some(Path::new("pmtui")),
+    )
+}
+
+pub(crate) fn build_chat_with_pmtui_bin(
+    engine: Engine,
+    conversation_id: &str,
+    model: Option<&str>,
+    turn_signal: &Path,
+    pmtui_bin: Option<&Path>,
+) -> Vec<String> {
     agent_manager::worker::build_standard_command(
         engine,
         &agent_manager::worker::Resume::Continue(conversation_id.to_string()),
-        agent_manager::worker::turn_hook_enabled().then_some(turn_signal),
+        agent_manager::worker::turn_hook_runnable_for(engine, pmtui_bin).then_some(turn_signal),
         model,
     )
 }
 
 /// Build the argv for a **real interactive** engine REPL that CREATES a brand-new
 /// conversation with a caller-chosen id — the "chattable-on-create" launch (the
-/// CREATE sibling of [`build_chat`], which RESUMES). Only `Engine::Claude` is
-/// creatable in v1: interactive `claude --session-id <uuid>` opens a chattable REPL
-/// on that exact id, so pmtui can mint the id, seed it into the registry (the daemon
-/// then adopts+resumes it), and hand the human a live conversation immediately —
-/// with NO `-p` (interactive, not headless) and NO `--resume` (it is a fresh
-/// create). `env -u CLAUDECODE` drops the inherited Claude Code marker exactly like
-/// [`build_chat`]/the poll worker, so the child isn't refused as a nested session.
+/// CREATE sibling of [`build_chat`], which RESUMES). Claude and TRAE are creatable
+/// because both CLIs accept a caller-chosen session id, so pmtui can mint the id,
+/// seed it into the registry, and hand the human a live conversation immediately.
 ///
 /// `Engine::Codex` is UNREACHABLE here: codex exposes no caller-chosen id for an
 /// interactive session, so it is never created by pmtui in v1 (it uses the armed
 /// auto-open fallback). The `request_attach` router never routes codex to a create,
 /// so this arm cannot be hit; it panics to make that invariant explicit.
+#[cfg(test)]
 pub(crate) fn build_chat_create(
     engine: Engine,
     conversation_id: &str,
     model: Option<&str>,
     turn_signal: &Path,
 ) -> Vec<String> {
+    build_chat_create_with_pmtui_bin(
+        engine,
+        conversation_id,
+        model,
+        turn_signal,
+        Some(Path::new("pmtui")),
+    )
+}
+
+pub(crate) fn build_chat_create_with_pmtui_bin(
+    engine: Engine,
+    conversation_id: &str,
+    model: Option<&str>,
+    turn_signal: &Path,
+    pmtui_bin: Option<&Path>,
+) -> Vec<String> {
     match engine {
-        Engine::Claude => agent_manager::worker::build_standard_command(
+        Engine::Claude | Engine::Trae => agent_manager::worker::build_standard_command(
             engine,
             &agent_manager::worker::Resume::Fresh {
                 session_id: Some(conversation_id.to_string()),
             },
-            agent_manager::worker::turn_hook_enabled().then_some(turn_signal),
+            agent_manager::worker::turn_hook_runnable_for(engine, pmtui_bin).then_some(turn_signal),
             model,
         ),
         Engine::Codex => {
@@ -292,7 +328,7 @@ pub(crate) fn chat_with_handoff(
         anyhow::bail!("a wake just started — try again in a moment");
     }
     // Idempotent by unified session name: an existing process is attached, not relaunched.
-    install_spawn_skill(&req.root, req.engine, &req.env);
+    install_prelaunch_skills(&req.root, req.engine, &req.env);
     driver.launch_interactive(&req.session, &req.root, &req.argv, &req.env)?;
     on_started();
 
@@ -344,7 +380,7 @@ pub(crate) fn create_chat_with_handoff(
     let session = req.session;
 
     // Idempotent by unified session name: an existing process is attached, not relaunched.
-    install_spawn_skill(&root, req.engine, &req.env);
+    install_prelaunch_skills(&root, req.engine, &req.env);
     driver.launch_interactive(&session, &root, &argv, &req.env)?;
     on_started();
 

@@ -71,6 +71,133 @@ fn for_session_rebases_state_under_sessions_id() {
 }
 
 #[test]
+fn paths_can_be_recovered_from_a_managed_state_dir() {
+    let root = ProjectPaths::from_state_dir("/tmp/proj/.project-state").unwrap();
+    assert_eq!(
+        root.state_dir(),
+        std::path::PathBuf::from("/tmp/proj/.project-state")
+    );
+    assert_eq!(
+        root.turn_signal(),
+        std::path::PathBuf::from("/tmp/proj/.project-state/.daemon/turn-complete")
+    );
+
+    let session = ProjectPaths::for_session("/tmp/proj", "bot-1");
+    let recovered = ProjectPaths::from_state_dir(session.state_dir()).unwrap();
+    assert_eq!(recovered.state_dir(), session.state_dir());
+    assert_eq!(recovered.turn_signal(), session.turn_signal());
+    assert!(ProjectPaths::from_state_dir("/tmp/proj/not-state/bot").is_none());
+}
+
+#[test]
+fn state_dir_recovery_accepts_relative_project_and_session_layouts() {
+    let root = ProjectPaths::from_state_dir("proj/.project-state").unwrap();
+    assert_eq!(root.root, std::path::PathBuf::from("proj"));
+    assert_eq!(
+        root.state_dir(),
+        std::path::PathBuf::from("proj/.project-state")
+    );
+
+    let session =
+        ProjectPaths::from_state_dir("proj/.project-state/sessions/worker-a-1234").unwrap();
+    assert_eq!(session.root, std::path::PathBuf::from("proj"));
+    assert_eq!(
+        session.state_dir(),
+        std::path::PathBuf::from("proj/.project-state/sessions/worker-a-1234")
+    );
+}
+
+#[test]
+fn state_dir_recovery_rejects_incomplete_or_unrelated_layouts() {
+    // A malformed hook path must not redirect identity writes into an unrelated project.
+    for path in [
+        "",
+        "/",
+        ".",
+        "..",
+        "session-id",
+        "sessions/session-id",
+        "/sessions/session-id",
+        "/tmp/proj/not-state/sessions/session-id",
+        "/tmp/proj/.project-state/session-id",
+        "/tmp/proj/.project-state/sessions/session-id/.daemon",
+        "/tmp/proj/.project-state/not-sessions/session-id",
+        "/tmp/proj/not-state/sessions/session-id",
+    ] {
+        assert!(
+            ProjectPaths::from_state_dir(path).is_none(),
+            "accepted unrelated state directory {path:?}"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn state_dir_recovery_rejects_non_utf8_layout_names_but_preserves_project_roots() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    let non_utf8 = OsString::from_vec(b"project-\xff".to_vec());
+    for path in [
+        PathBuf::from("/tmp/proj/.project-state/sessions").join(&non_utf8),
+        PathBuf::from("/tmp/proj")
+            .join(&non_utf8)
+            .join("session-id"),
+        PathBuf::from("/tmp/proj")
+            .join(&non_utf8)
+            .join("sessions/session-id"),
+    ] {
+        assert!(
+            ProjectPaths::from_state_dir(&path).is_none(),
+            "accepted an invalid state layout: {path:?}"
+        );
+    }
+
+    // The project root is an OS path, not a protocol name, so it must survive unchanged.
+    let root = PathBuf::from("/tmp").join(non_utf8);
+    for original in [
+        ProjectPaths::new(&root),
+        ProjectPaths::for_session(&root, "worker"),
+    ] {
+        let recovered = ProjectPaths::from_state_dir(original.state_dir()).unwrap();
+        assert_eq!(recovered.root, root);
+        assert_eq!(
+            recovered.codex_conversation_id(),
+            original.codex_conversation_id()
+        );
+        assert_eq!(recovered.turn_signal(), original.turn_signal());
+    }
+}
+
+#[test]
+fn recovering_runtime_paths_keeps_session_identity_separate_from_state_files() {
+    let first = ProjectPaths::for_session("/tmp/proj", "a/b");
+    let second = ProjectPaths::for_session("/tmp/proj", "a.b");
+    for original in [&first, &second] {
+        let recovered = ProjectPaths::from_state_dir(original.state_dir()).unwrap();
+        assert_eq!(recovered.pmstate(), original.pmstate());
+        assert_eq!(
+            recovered.codex_conversation_id(),
+            original.codex_conversation_id()
+        );
+        // A file or hook output is not a state directory, even inside a valid session.
+        for file in [
+            original.pmstate(),
+            original.checkpoint(),
+            original.turn_signal(),
+            original.codex_conversation_id(),
+        ] {
+            assert!(ProjectPaths::from_state_dir(file).is_none());
+        }
+    }
+    assert_ne!(
+        first.codex_conversation_id(),
+        second.codex_conversation_id()
+    );
+}
+
+#[test]
 fn worker_skill_paths_are_correct() {
     let paths = ProjectPaths::for_session("/proj", "s1");
     assert_eq!(
@@ -109,6 +236,10 @@ fn worker_skill_paths_are_correct() {
     );
     assert_eq!(
         paths.native_worker_skill_file(crate::registry::Engine::Codex),
+        paths.canonical_worker_skill_file()
+    );
+    assert_eq!(
+        paths.native_worker_skill_file(crate::registry::Engine::Trae),
         paths.canonical_worker_skill_file()
     );
 }
@@ -205,4 +336,25 @@ fn session_seg_sanitizes_unsafe_chars() {
 
     assert!(segment("a/b c").starts_with("a-b-c-"));
     assert!(segment("///").starts_with("session-"));
+}
+
+// Moved out of `state/paths.rs`, beside the rest of this module's tests.
+
+#[test]
+fn directive_path_is_a_state_dir_sibling_of_brief() {
+    let p = ProjectPaths::for_session("/tmp/proj", "sess-1");
+    assert_eq!(p.directive(), p.state_dir().join("directive.md"));
+    assert_eq!(p.directive().parent(), p.brief().parent());
+}
+
+#[test]
+fn advice_last_message_is_a_per_seq_sibling_of_the_advice_log() {
+    let p = ProjectPaths::new(std::path::PathBuf::from("/tmp/proj"));
+    assert_eq!(
+        p.advice_last_message(7),
+        p.steps_dir().join("advice-7.last")
+    );
+    // Distinct from the log and the done-signal so a codex verdict file cannot collide with them.
+    assert_ne!(p.advice_last_message(7), p.advice_log(7));
+    assert_ne!(p.advice_last_message(7), p.advice_done_signal(7));
 }

@@ -143,6 +143,43 @@ fn standard_codex_first_enter_opens_a_fresh_chat_without_seeding() {
 }
 
 #[test]
+fn enter_ignores_an_unconfirmed_dead_trae_thread_and_starts_fresh() {
+    const STALE_THREAD: &str = "01a133c3-b12f-7033-ae77-38f3294fb68e";
+    let dir = tempfile::tempdir().unwrap();
+    let (reg_path, root) = reg_with_agent_loop(dir.path(), "bot");
+    let mut registry = Registry::load(&reg_path).unwrap();
+    registry.projects[0].engine = Some(Engine::Trae);
+    registry.projects[0].conversation_id = Some(STALE_THREAD.into());
+    registry.save(&reg_path).unwrap();
+    let paths = ProjectPaths::for_session(&root, "bot");
+    let mut ledger = job::load(&paths).unwrap().unwrap();
+    ledger.engine = Engine::Trae;
+    ledger.conversation_id = Some(STALE_THREAD.into());
+    ledger.resume_unconfirmed = true;
+    job::save(&paths, &ledger).unwrap();
+
+    let mut app = loop_app(&reg_path);
+    app.request_attach();
+
+    let req = app
+        .pending_create_chat
+        .as_ref()
+        .expect("a stale unconfirmed TraeX thread should create a fresh chat");
+    assert!(
+        req.argv.windows(2).any(|pair| pair[0] == "--session-id"),
+        "fresh TraeX chat gets a caller-chosen name: {:?}",
+        req.argv
+    );
+    assert!(
+        !req.argv
+            .windows(2)
+            .any(|pair| pair == ["resume", STALE_THREAD]),
+        "Enter must not repeat a stale unconfirmed TraeX resume: {:?}",
+        req.argv
+    );
+}
+
+#[test]
 fn first_enter_reports_an_unusable_driver_lock_path() {
     let dir = tempfile::tempdir().unwrap();
     let (reg_path, root) = reg_with_agent_loop(dir.path(), "bot");
@@ -520,6 +557,21 @@ fn first_wake_action_routes_and_copies_per_engine_and_lease() {
             assert!(s.contains("bot"), "{s}");
         }
         other => panic!("codex+free must be CreateChatNoSeed, got {other:?}"),
+    }
+    // trae + free lock behaves like claude: pmtui owns the session id, so it can
+    // create-and-chat without waiting for a daemon wake.
+    assert_eq!(
+        first_wake_action(Engine::Trae, true, "bot"),
+        FirstWakeAction::CreateAndChat
+    );
+    // trae + held lock still arms; the daemon guard later refuses TRAE Autopilot
+    // rather than constructing an untested loop command.
+    match first_wake_action(Engine::Trae, false, "bot") {
+        FirstWakeAction::Arm(s) => {
+            assert!(s.contains("creating on the first wake"), "{s}");
+            assert!(s.contains("automatically"), "{s}");
+        }
+        other => panic!("trae+held must ARM, got {other:?}"),
     }
 }
 

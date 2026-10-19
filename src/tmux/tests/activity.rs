@@ -7,6 +7,7 @@ use crate::tmux::activity::{
     PANE_TAIL_LINES, PaneActivity, classify_pane, has_composer, idle_fingerprint, is_bare_prompt,
     is_busy_spinner_line, is_codex_composer, is_spinner_glyph, progress_fingerprint,
 };
+use crate::tmux::classify_dialog;
 
 #[test]
 fn has_composer_sees_both_engines_prompts_and_no_dialog() {
@@ -28,6 +29,28 @@ fn has_composer_sees_both_engines_prompts_and_no_dialog() {
     let busy = "\u{273b} Quantumizing\u{2026} (3s \u{b7} \u{2193} 5 tokens)\n\u{276f}  \n";
     assert!(has_composer(busy));
     assert_eq!(classify_pane(busy), PaneActivity::Busy);
+}
+
+#[test]
+fn numbered_transcript_above_a_prompt_does_not_veto_the_generic_composer() {
+    let pane = concat!(
+        "Pick one if you agree?\n",
+        " ❯ 1. Yes\n",
+        "   2. No\n",
+        "Enter to select · Esc to cancel\n",
+        "\n",
+        "done\n",
+        "────────────────────────────────\n",
+        "❯  \n",
+        "────────────────────────────────\n",
+    );
+
+    assert!(
+        classify_dialog(pane).is_some(),
+        "fixture must look dialog-shaped"
+    );
+    assert!(has_composer(pane));
+    assert_eq!(classify_pane(pane), PaneActivity::Idle);
 }
 
 #[test]
@@ -379,7 +402,11 @@ fn current_claude_placeholder_composer_accepts_text() {
         has_composer(pane),
         "Claude's current placeholder prompt must accept pmtui's s-send gate"
     );
-    assert_eq!(classify_pane(pane), PaneActivity::Idle);
+    assert_eq!(
+        classify_pane(pane),
+        PaneActivity::Busy,
+        "plain text cannot tell this hint from a draft; `classify_pane_styled` can"
+    );
     let reworded = pane.replace("Try \"how do I log an error?\"", "Ask anything");
     assert!(
         has_composer(&reworded),
@@ -401,10 +428,32 @@ fn claude_box_prompt_survives_a_footer_taller_than_the_activity_window() {
     for row in 0..PANE_TAIL_LINES {
         pane.push_str(&format!("  statusline row {row}\n"));
     }
+    // Deliberate: the activity window stays at 16 rows so a stale spinner further up cannot veto
+    // Idle, while the send gate only asks whether a box exists, never whether the agent is idle.
     assert!(!has_composer(&pane), "outside the 16-row activity window");
     assert!(
         crate::tmux::has_composer_in_tail(&pane, 40),
         "the send gate reads the 40 rows it captured"
+    );
+}
+
+#[test]
+fn a_box_holding_a_draft_is_busy_in_plain_text() {
+    let pane = concat!(
+        "⏺ Done.\n",
+        "────────────────────────────────\n",
+        "❯ wait, do not deploy yet\n",
+        "────────────────────────────────\n",
+        "  ⏵⏵ auto mode on (shift+tab to cycle)\n",
+    );
+    assert!(
+        has_composer(pane),
+        "it is still a prompt the send gate can see"
+    );
+    assert_eq!(
+        classify_pane(pane),
+        PaneActivity::Busy,
+        "a nudge typed here would be submitted together with the person's draft"
     );
 }
 

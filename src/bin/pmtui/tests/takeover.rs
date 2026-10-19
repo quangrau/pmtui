@@ -555,6 +555,7 @@ fn startup_wrapper_runs_the_dashboard_after_a_confirmed_clean_handoff() {
             registry: registry.clone(),
             socket: socket.into(),
             help: false,
+            channel: None,
         },
         &mut |app| {
             dashboard_called = true;

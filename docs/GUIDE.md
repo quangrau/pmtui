@@ -16,7 +16,7 @@ rather than repeating it.
 
 ## How it works
 
-`pmd` treats each project as **one persistent `claude`/`codex` session** living in a
+`pmd` treats each project as **one persistent `claude`/`codex`/`traex` session** living in a
 private-socket tmux server (`tmux -L <socket>`). On its heartbeat the daemon:
 
 1. **watches** the session — is the agent working now, idle, or waiting on you?
@@ -25,7 +25,7 @@ private-socket tmux server (`tmux -L <socket>`). On its heartbeat the daemon:
 3. **reads decisions** from the agent's marker and from positively identified in-terminal
    choice menus;
 4. **routes** each decision. An ordinary one can be auto-handled by a **decider** consult on
-   the session's chosen engine (`claude -p` by default, `codex` optional; switch with `e`),
+   the session's chosen engine (Claude by default, Codex or TRAE optional; switch with `e`),
    which checks the concrete choice against the goal, the latest accepted result, and project
    evidence. Anything clearly human-owned — external, privileged, irreversible, or outside
    the goal — **escalates** to the log plus a desktop notification and parks the session for
@@ -61,12 +61,13 @@ attaches you to that same terminal. Switching to Autopilot makes `pmd` drive it;
 back makes `pmd` stop typing — without restarting the process or losing the conversation.
 
 Autopilot is a goal-level supervisor **above** the engine's own permission mode. Claude and
-Codex still decide whether a concrete tool call needs permission; `pmd` decides which
+Codex still decide whether a concrete tool call needs permission; TRAE CLI does the same through
+TraeX permissions and hook trust. `pmd` decides which
 goal-aligned work or ordinary choice happens next, and records that decision for review.
 
-Permission, trust, and command-approval prompts are human-only. Codex directory trust is
-never auto-approved: its first-run prompt stays for you to answer once, and an unattended
-Autopilot session that reaches it is parked and surfaced. Only menus whose own chrome
+Permission, trust, and command-approval prompts are human-only. Codex directory trust and TraeX hook
+trust are never auto-approved: first-run prompts stay for you to answer once, and an unattended
+Autopilot session that reaches one is parked and surfaced. Only menus whose own chrome
 identifies them as ordinary choices can be delegated, and quoted text is not enough — `pmd`
 sends one navigation key and requires the live highlight to move before it will press Enter.
 
@@ -84,11 +85,13 @@ the Page keys.
 
 Every terminal that pmtui or pmd launches with `PMTUI_BIN` in its environment first gets the
 `pmtui-spawn` skill in the project root, so the agent inside knows how to ask for a child
-session. The skill is a short procedure: spawn only independent work, write a self-contained
-Message, run `pmtui spawn` with one generated request id, and act on the JSON `state` even on
-a nonzero exit. Nested spawns are refused and a sixth child waits its turn, and neither
-process ever creates or edits your `AGENTS.md`. See the [`pmtui spawn` section in the
-README](../README.md#handing-work-to-a-child-session-pmtui-spawn) for the command itself.
+session. Codex and TraeX read it from `.agents/skills/`; Claude gets an exact compatibility
+symlink under `.claude/skills/`. The skill is a short procedure: spawn only independent work,
+write a self-contained Message, run `pmtui spawn` with one generated request id, and act on
+the JSON `state` even on a nonzero exit. Nested spawns are refused and a sixth child waits its
+turn, and neither process ever creates or edits your `AGENTS.md`. See the [`pmtui spawn`
+section in the README](../README.md#handing-work-to-a-child-session-pmtui-spawn) for the
+command itself.
 
 ### What the dashboard said earlier
 
@@ -172,11 +175,22 @@ plain "next field" it always was, so tabbing through the form never gets stuck o
 that row has the arrows, **`shift+tab`** is how you go back a field. To descend from a path you
 typed in full, type the `/` and its children become candidates.
 
-### Codex sessions and their conversation
+### Engine sessions and their conversations
 
-Claude lets pmtui name a conversation up front; Codex does not — it assigns its own. So a Codex session
-learns its identity from the engine itself, reported when its **first turn finishes**. Until then the
-session has no conversation to go back to, which is why a brand-new Codex row shows none.
+Claude lets pmtui name a conversation up front. Codex does not — it assigns its own. TRAE CLI
+accepts a name but cannot resume by it. Both learn their identity from the engine itself.
+Codex reports it when the **first turn finishes**. TRAE can report it at session startup,
+and reports it again when a turn finishes. Until an identity arrives, the session has no
+conversation to go back to.
+
+TRAE forks use the session-start hook to identify the child before it runs a turn.
+Review the new hook in an ordinary TRAE session first. Existing sessions need a restart
+to load it; hook trust remains a choice for you.
+Hook injection can be disabled with `PM_TURN_HOOK=off`, `0`, or `false`. When hooks are
+enabled, the managed terminal must carry `PMTUI_BIN`; hooks do not search PATH for `pmtui`.
+If either condition prevents a TraeX hook from running, restarting that same session does not fix the
+identity problem. Start it from a pmtui/pmd pair that supplies `PMTUI_BIN`, or turn hook injection back
+on.
 
 Once it has one, `Enter` resumes that conversation and a restart keeps it. Before this, neither the
 dashboard nor the driver had any way to know the id, so a Codex session that had been working for hours
@@ -302,6 +316,16 @@ restart keeps driving on the old build rather than leaving your sessions unatten
 The row answers a question a version number alone cannot. `(installed …)` appears only when the
 installer's own record disagrees with the binary you are running, which is what happens when
 `~/.local/bin` points at a local build — the reason an update can look like it did nothing.
+
+To try the daily build from a checkout, build it and start the installed launcher from that checkout:
+
+```bash
+cargo build --locked
+pmtui --channel daily
+```
+
+This is one-shot. It runs `./target/debug/pmtui` for the same registry and socket, asks only that
+`pmd` to exit, and leaves project terminals running.
 
 Four different things can go wrong, and the row keeps them apart, because the fix for each is
 different:
@@ -514,12 +538,13 @@ it at all; you drive by hand. See
 <summary><b>What engine and model does the decider use? (<code>e</code>)</b></summary>
 
 **Claude** by default. On an **autopilot** row, press **`e`** to pick that session's decider
-engine and model in two steps: the engine (`claude` or `codex`), then **Enter** for its model
+engine and model in two steps: the engine (`claude`, `codex`, or `traex`), then **Enter** for its model
 list (`(default)` plus the models discovered for that engine). ↑↓ move, Enter selects, Esc
 steps back or cancels. It writes only `config.json`, so it applies to the next decision with
 no restart, and `(default)` falls back to the engine's own default. Whatever you pick, a
 reply that is not a clean verdict escalates to you. (`e` on a `standard` row refuses and
-points you at `m`.)
+points you at `m`.) TRAE uses a read-only, bounded `traex exec` run. A saved model wins over
+`PM_SUPERVISOR_TRAE_MODEL`; with neither set, TraeX selects its default model.
 </details>
 
 <details>
@@ -543,8 +568,8 @@ when it has an explicit `availableModels` allowlist, resolving entries through
 `sonnet`, `opus` and `haiku` aliases (Claude still enforces what your subscription may use).
 Bedrock, Vertex, Foundry, Mantle, Anthropic AWS and custom-base-URL setups need an explicit
 allowlist, because a bare alias may not select the provider model you meant. **Codex** models
-come from `codex debug models`. The list is cached per engine for the dashboard's lifetime —
-restart `pmtui` to refresh it.
+come from `codex debug models`. **TRAE CLI** models come from `traex models --json`.
+The list is cached per engine for the dashboard's lifetime — restart `pmtui` to refresh it.
 </details>
 
 <details>

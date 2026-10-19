@@ -3,6 +3,8 @@
 //! current state. This module never answers one; the driver must actively prove a
 //! delegable menu reacts to navigation before any submit key is sent.
 
+use crate::registry::Engine;
+
 /// Whether a recognised dialog is a positively identified goal-choice UI or must
 /// stay with the human.
 ///
@@ -185,10 +187,11 @@ pub(super) const DIALOG_MAX_QUESTION_GAP: usize = 4;
 /// rather than an older one still visible further up the transcript.
 ///
 /// PHRASE-ANCHORED EXCEPTIONS run afterwards, only on a window these rules have
-/// already declined: codex's **startup trust dialog**
-/// ([`classify_codex_trust_dialog`]) and Claude's workspace trust dialog
-/// ([`classify_claude_trust_dialog`]). Two clauses above reject the codex trust dialog — its `?`
-/// sits mid-line in a wrapped paragraph, and its footer is `Press enter to continue`, not
+/// already declined: codex's **startup trust dialog** ([`classify_codex_trust_dialog`]),
+/// Claude's workspace trust dialog ([`classify_claude_trust_dialog`]), and engine-gated TraeX
+/// prompts ([`classify_trae_hook_trust_dialog`] / [`classify_trae_signin_dialog`]). Two clauses
+/// above reject the codex trust dialog — its `?` sits mid-line in a wrapped paragraph, and its
+/// footer is `Press enter to continue`, not
 /// `Esc to cancel` — and neither clause is widened to let it in, because "a mid-line
 /// `?` plus a bare press-enter footer" describes a large amount of ordinary prose and
 /// a false dialog escalates a session that is working fine. The exception matches that
@@ -196,6 +199,19 @@ pub(super) const DIALOG_MAX_QUESTION_GAP: usize = 4;
 /// but its options are plain labels, not the general numbered block.
 /// The exceptions therefore keep the general rules exactly as narrow as they were.
 pub fn classify_dialog(capture: &str) -> Option<PaneDialog> {
+    classify_dialog_inner(capture, false)
+}
+
+/// As [`classify_dialog`], with engine-owned dialog shapes that would be false positives on
+/// another engine's transcript. TraeX anchors are only authoritative when the row is TraeX.
+pub fn classify_dialog_for_engine(
+    capture: &str,
+    engine: impl Into<Option<Engine>>,
+) -> Option<PaneDialog> {
+    classify_dialog_inner(capture, engine.into() == Some(Engine::Trae))
+}
+
+fn classify_dialog_inner(capture: &str, trae: bool) -> Option<PaneDialog> {
     let non_empty: Vec<&str> = capture.lines().filter(|l| !l.trim().is_empty()).collect();
     let start = non_empty.len().saturating_sub(DIALOG_TAIL_LINES);
     let window = non_empty.get(start..)?;
@@ -251,7 +267,15 @@ pub fn classify_dialog(capture: &str) -> Option<PaneDialog> {
             });
         }
     }
-    classify_codex_trust_dialog(window).or_else(|| classify_claude_trust_dialog(window))
+    classify_codex_trust_dialog(window)
+        .or_else(|| classify_claude_trust_dialog(window))
+        .or_else(|| {
+            trae.then(|| {
+                classify_trae_hook_trust_dialog(window)
+                    .or_else(|| classify_trae_signin_dialog(window))
+            })
+            .flatten()
+        })
 }
 
 /// Content anchors that identify authority-changing prompts even if a future CLI
@@ -462,6 +486,12 @@ fn classify_codex_trust_dialog(window: &[&str]) -> Option<PaneDialog> {
 /// Recognise Claude's startup workspace trust dialog on a window whose general rules already found
 /// nothing. Like the codex trust dialog, this is human-only: a person decides whether project-local
 /// files may influence the agent before any ordinary Message can be sent.
+///
+/// Every anchor must sit where the live dialog draws it (`FIXTURE_CLAUDE_DIALOG_TRUST`): the two
+/// options within [`CLAUDE_TRUST_MAX_SPAN`] rows below the question, `Security guide` between the
+/// question and the options, and the `Enter to confirm` footer within
+/// [`DIALOG_MAX_QUESTION_GAP`] rows after them. Four literal anchors scattered over a transcript
+/// that merely shows the dialog's text are not the dialog.
 fn classify_claude_trust_dialog(window: &[&str]) -> Option<PaneDialog> {
     for q in (0..window.len()).rev() {
         let trimmed = window[q].trim();
@@ -469,14 +499,17 @@ fn classify_claude_trust_dialog(window: &[&str]) -> Option<PaneDialog> {
         let Some(at) = lower.find(CLAUDE_TRUST_QUESTION) else {
             continue;
         };
-        let options = collect_claude_trust_options(&window[q + 1..]);
+        let below = &window[q + 1..window.len().min(q + 1 + CLAUDE_TRUST_MAX_SPAN)];
+        let options = collect_claude_trust_options(below, q + 1);
         if options.options.len() < DIALOG_MIN_OPTIONS {
             continue;
         }
-        let has_security_anchor = window[q + 1..]
+        let has_security_anchor = window[q + 1..options.start]
             .iter()
             .any(|line| line.trim().eq_ignore_ascii_case("Security guide"));
-        let has_enter_footer = window[q + 1..].iter().any(|line| {
+        let footer_rows =
+            &window[options.end..window.len().min(options.end + DIALOG_MAX_QUESTION_GAP)];
+        let has_enter_footer = footer_rows.iter().any(|line| {
             line.trim()
                 .eq_ignore_ascii_case("Enter to confirm · Esc to cancel")
         });
@@ -492,18 +525,134 @@ fn classify_claude_trust_dialog(window: &[&str]) -> Option<PaneDialog> {
             mode: PaneDialogMode::Single,
             checked_indices: Vec::new(),
             class: PaneDialogClass::HumanOnly,
-            context_hash: dialog_context_hash(window, q, q + 1),
+            context_hash: dialog_context_hash(window, q, options.start),
         });
     }
     None
 }
 
-fn collect_claude_trust_options(lines: &[&str]) -> CollectedOptions {
+const TRAE_HOOK_TRUST_HEADING: &str = "hooks need review";
+const TRAE_SIGNIN_HEADING: &str = "sign in to use trae cli";
+
+/// Recognise TraeX's hook trust prompt on a window the general rules declined.
+///
+/// TraeX shows it at launch when a hook is new or changed — which pmtui's own turn-complete
+/// `Stop` hook is, the first time — and accepts no prompt until a person answers it:
+///
+/// ```text
+///   Hooks need review
+///   1 hook is new or changed.
+///   Hooks can run outside the sandbox after you trust them.
+/// ❯ 1. Review hooks
+///   2. Trust all and continue
+///   3. Continue without trusting (hooks won't run)
+///   enter confirm  |  esc go back
+/// ```
+///
+/// The general rule misses it twice: the heading has no `?`, and the footer is not
+/// `Esc to cancel`. Without this, the pane reads `Busy` and an Autopilot session waits there
+/// silently instead of asking its person. Trusting hooks lets them run outside the sandbox, so
+/// the prompt is human-only, and nothing in this module answers it.
+fn classify_trae_hook_trust_dialog(window: &[&str]) -> Option<PaneDialog> {
+    classify_trae_anchored_dialog(window, TRAE_HOOK_TRUST_HEADING, |lines| {
+        lines
+            .iter()
+            .map(|line| {
+                if line
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("enter confirm")
+                {
+                    "Esc to cancel".to_string()
+                } else {
+                    (*line).to_string()
+                }
+            })
+            .collect()
+    })
+}
+
+/// Recognise TraeX's sign-in chooser on a window the general rules declined.
+///
+/// TraeX shows it before its first sign-in, and it may sit BELOW TraeX's own input box, so a
+/// prompt on screen does not mean the pane takes text:
+///
+/// ```text
+///   Sign in to use TRAE CLI
+/// > 1. ByteDance Employee
+///      Sign in with Codebase Git or ByteDance SSO
+///   2. Enterprise User
+///      Sign in with email, a custom domain, or a PAT
+///   Press Enter to continue
+/// ```
+///
+/// It marks the selected choice with a plain ASCII `>`. That marker is accepted HERE ONLY, by
+/// rewriting it to `❯` in a copy of the window: accepting `>` in the shared option parser
+/// would turn a quoted `> 1. step` in any engine's transcript into a dialog option. Choosing an
+/// account route is the person's decision, so the chooser is human-only.
+fn classify_trae_signin_dialog(window: &[&str]) -> Option<PaneDialog> {
+    classify_trae_anchored_dialog(window, TRAE_SIGNIN_HEADING, |lines| {
+        lines
+            .iter()
+            .map(|line| {
+                let rest = line.trim_start();
+                match rest.strip_prefix('>') {
+                    Some(after) if dialog_option_text(after).is_some() => format!("❯{after}"),
+                    _ => (*line).to_string(),
+                }
+            })
+            .collect()
+    })
+}
+
+/// A human-only dialog led by the line `heading` (matched whole, case-insensitively), with
+/// [`DIALOG_MIN_OPTIONS`]+ options below it. `normalise` rewrites the window before the
+/// options are collected; the reported dialog keeps the original heading text.
+fn classify_trae_anchored_dialog<F>(
+    window: &[&str],
+    heading: &str,
+    normalise: F,
+) -> Option<PaneDialog>
+where
+    F: Fn(&[&str]) -> Vec<String>,
+{
+    let normalised = normalise(window);
+    let normalised: Vec<&str> = normalised.iter().map(String::as_str).collect();
+    for q in (0..normalised.len()).rev() {
+        let trimmed = normalised[q].trim();
+        if !trimmed.eq_ignore_ascii_case(heading) {
+            continue;
+        }
+        let collected = collect_dialog_options(&normalised, q);
+        if collected.options.len() < DIALOG_MIN_OPTIONS {
+            continue;
+        }
+        return Some(PaneDialog {
+            question: trimmed.to_string(),
+            options: collected.options,
+            selected_index: collected.selected_index,
+            mode: PaneDialogMode::Single,
+            checked_indices: Vec::new(),
+            class: PaneDialogClass::HumanOnly,
+            context_hash: dialog_context_hash(&normalised, q, collected.start),
+        });
+    }
+    None
+}
+
+/// How many rows below its question the Claude trust dialog may draw its options. The live dialog
+/// draws them 8 rows below; the margin covers a wrapped paragraph on a narrower pane.
+const CLAUDE_TRUST_MAX_SPAN: usize = 14;
+
+/// The trust dialog's two options in `lines`, which start at row `offset` of the window; `start`
+/// and `end` are WINDOW indices, as every other option producer returns them. The options must be
+/// adjacent rows: anything between them is not this dialog.
+fn collect_claude_trust_options(lines: &[&str], offset: usize) -> CollectedOptions {
     let mut options = Vec::new();
     let mut selected_index = None;
-    let mut start = 0;
-    let mut end = 0;
-    for (offset, line) in lines.iter().enumerate() {
+    let mut start = offset;
+    let mut end = offset;
+    for (row, line) in lines.iter().enumerate() {
         let mut rest = line.trim_start();
         let selected = rest.starts_with('❯');
         if let Some(after_marker) = rest.strip_prefix('❯') {
@@ -511,16 +660,19 @@ fn collect_claude_trust_options(lines: &[&str]) -> CollectedOptions {
         }
         let label = rest.trim();
         if !matches!(label, "No, exit" | "Yes, I trust this folder") {
-            continue;
+            if options.is_empty() {
+                continue;
+            }
+            break;
         }
         if options.is_empty() {
-            start = offset;
+            start = offset + row;
         }
         if selected {
             selected_index = Some(options.len());
         }
         options.push(label.to_string());
-        end = offset + 1;
+        end = offset + row + 1;
     }
     CollectedOptions {
         options,
@@ -556,9 +708,10 @@ fn hash_text(mut hash: u64, text: &str) -> u64 {
 }
 
 /// A numbered dialog option line (`❯ 1. Yes` / `   3. No` / codex's `› 1. Yes,
-/// proceed (y)`) → its bare text, with the selection marker, the leading whitespace
-/// and the `<n>. ` prefix gone. `None` for anything else — including a plain numbered
-/// content line such as the diff row `  1 hi` (no `.` after the number).
+/// proceed (y)`) → its bare text,
+/// with the selection marker, the leading whitespace and the `<n>. ` prefix gone.
+/// `None` for anything else — including a plain numbered content line such as the
+/// diff row `  1 hi` (no `.` after the number).
 pub(super) fn dialog_option_text(line: &str) -> Option<&str> {
     dialog_option(line).map(|option| option.text)
 }

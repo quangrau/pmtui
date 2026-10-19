@@ -109,7 +109,15 @@ impl App {
             // registry seed — so a session pmtui already seeded resumes that same id
             // on a second Enter rather than minting a second conversation.
             let ledger = job::load(&session_paths).ok().flatten();
-            let ledger_cid = ledger.as_ref().and_then(|l| l.conversation_id.clone());
+            let trae_resume_unconfirmed =
+                engine == Engine::Trae && ledger.as_ref().is_some_and(|l| l.resume_unconfirmed);
+            let ledger_cid = ledger.as_ref().and_then(|l| {
+                if trae_resume_unconfirmed {
+                    None
+                } else {
+                    l.conversation_id.clone()
+                }
+            });
             let run_is_running = ledger
                 .as_ref()
                 .map(|l| matches!(l.run, job::JobRun::Running { .. }))
@@ -119,11 +127,16 @@ impl App {
             // wake adopts it — which is why a long-running codex session used to read as
             // never-woken and get a SECOND conversation on Enter.
             let captured = read_captured_conversation_id(&session_paths);
-            let effective = effective_id(
-                ledger_cid.as_deref(),
-                registry_cid.as_deref(),
-                captured.as_deref(),
-            );
+            let effective = if trae_resume_unconfirmed {
+                None
+            } else {
+                effective_id(
+                    engine,
+                    ledger_cid.as_deref(),
+                    registry_cid.as_deref(),
+                    captured.as_deref(),
+                )
+            };
             // A live unified terminal always wins over ledger routing. Enter only
             // attaches; tmux client detection makes pmd defer while the human is there.
             let loop_session = session_name(&id, &root);
@@ -170,13 +183,25 @@ impl App {
                             &cid,
                         ) == Some(false);
                     let turn_signal = session_paths.turn_signal();
+                    let env = self.managed_env(&id, &root);
                     let argv = if create_ghost {
-                        build_chat_create(engine, &cid, worker_model.as_deref(), &turn_signal)
+                        build_chat_create_with_pmtui_bin(
+                            engine,
+                            &cid,
+                            worker_model.as_deref(),
+                            &turn_signal,
+                            env.pmtui_bin.as_deref(),
+                        )
                     } else {
-                        build_chat(engine, &cid, worker_model.as_deref(), &turn_signal)
+                        build_chat_with_pmtui_bin(
+                            engine,
+                            &cid,
+                            worker_model.as_deref(),
+                            &turn_signal,
+                            env.pmtui_bin.as_deref(),
+                        )
                     };
                     let argv = with_initial_prompt(argv, initial_prompt.as_deref());
-                    let env = self.managed_env(&id, &root);
                     self.pending_chat = Some(ChatReq {
                         argv,
                         session_paths,
@@ -218,7 +243,7 @@ impl App {
                                 // so it stays unbounded — second-class and unregressed.
                                 self.armed_drains_left = match engine {
                                     Engine::Claude => Some(AUTOPILOT_ARM_DRAINS),
-                                    Engine::Codex => None,
+                                    Engine::Codex | Engine::Trae => None,
                                 };
                                 // The daemon-DOWN give-up (`armed_wait_decision`) counts
                                 // CONSECUTIVE down samples, so the count has to start HERE:
@@ -269,11 +294,12 @@ impl App {
                                                 // keeps build_chat_create's codex
                                                 // `unreachable!` guard live.
                                                 argv: with_initial_prompt(
-                                                    build_chat_create(
+                                                    build_chat_create_with_pmtui_bin(
                                                         engine,
                                                         &u,
                                                         worker_model.as_deref(),
                                                         &turn_signal,
+                                                        env.pmtui_bin.as_deref(),
                                                     ),
                                                     initial_prompt.as_deref(),
                                                 ),

@@ -697,6 +697,23 @@ fn a_dialog_answer_waits_for_an_attached_human_to_leave() {
 }
 
 #[test]
+fn a_stale_dashboard_answer_to_a_dialog_is_ignored() {
+    let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
+    fx.sched.set_supervisor_enabled(false);
+    fx.driver.set_tail(&sess, CHOICE_DIALOG_PANE);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    let id = parked_dialog_id(&fx);
+    answer_dialog(&fx, &id, "dprint", START - 1);
+
+    assert_eq!(
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+        JobTick::Escalated(vec![id.clone()])
+    );
+    assert!(fx.driver.applied_dialog_selections().is_empty());
+    assert_eq!(ledger(&fx).open_stops[0].id, id);
+}
+
+#[test]
 fn a_human_answer_to_a_checkbox_dialog_toggles_the_choice_and_submits() {
     let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
     fx.sched.set_supervisor_enabled(false);
@@ -720,6 +737,89 @@ fn a_human_answer_to_a_checkbox_dialog_toggles_the_choice_and_submits() {
     );
     assert!(fx.driver.sent_keys().is_empty());
     assert!(ledger(&fx).open_stops.is_empty());
+}
+
+#[test]
+fn a_dialog_answer_waits_when_the_input_lock_is_busy() {
+    let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
+    fx.sched.set_supervisor_enabled(false);
+    fx.driver.set_tail(&sess, CHOICE_DIALOG_PANE);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    let id = parked_dialog_id(&fx);
+    fx.clock.set(START + 1);
+    answer_dialog(&fx, &id, "dprint", fx.clock.now());
+    let _held = crate::lease::try_acquire(&fx.paths.input_lock())
+        .unwrap()
+        .expect("input lock is free");
+
+    assert_eq!(
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+        JobTick::Escalated(vec![id])
+    );
+    assert!(fx.driver.applied_dialog_selections().is_empty());
+    assert_eq!(ledger(&fx).open_stops[0].status, StopStatus::AwaitingReply);
+}
+
+#[test]
+fn a_dialog_answer_waits_when_the_session_is_not_sendable() {
+    for dead in [false, true] {
+        let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
+        fx.sched.set_supervisor_enabled(false);
+        fx.driver.set_tail(&sess, CHOICE_DIALOG_PANE);
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+        let id = parked_dialog_id(&fx);
+        fx.clock.set(START + 1);
+        answer_dialog(&fx, &id, "dprint", fx.clock.now());
+        if dead {
+            fx.driver.set_pane_dead(&sess, true);
+        } else {
+            fx.driver.set_alive(&sess, false);
+        }
+
+        assert_eq!(
+            fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+            JobTick::Escalated(vec![id])
+        );
+        assert!(fx.driver.applied_dialog_selections().is_empty());
+    }
+}
+
+#[test]
+fn a_dialog_answer_waits_when_the_interactivity_probe_fails() {
+    let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
+    fx.sched.set_supervisor_enabled(false);
+    fx.driver.set_tail(&sess, CHOICE_DIALOG_PANE);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    let id = parked_dialog_id(&fx);
+    fx.clock.set(START + 1);
+    answer_dialog(&fx, &id, "dprint", fx.clock.now());
+    fx.driver.fail_verify_dialog(&sess, true);
+
+    assert_eq!(
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+        JobTick::Escalated(vec![id.clone()])
+    );
+    assert!(fx.driver.applied_dialog_selections().is_empty());
+    assert_eq!(ledger(&fx).open_stops[0].status, StopStatus::Held);
+}
+
+#[test]
+fn a_dialog_answer_waits_if_a_human_attaches_after_the_probe() {
+    let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
+    fx.sched.set_supervisor_enabled(false);
+    fx.driver.set_tail(&sess, CHOICE_DIALOG_PANE);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    let id = parked_dialog_id(&fx);
+    fx.clock.set(START + 1);
+    answer_dialog(&fx, &id, "dprint", fx.clock.now());
+    fx.driver.attach_after_verify_dialog(&sess);
+
+    assert_eq!(
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+        JobTick::Escalated(vec![id])
+    );
+    assert!(fx.driver.applied_dialog_selections().is_empty());
+    assert_eq!(ledger(&fx).open_stops[0].status, StopStatus::Held);
 }
 
 #[test]
@@ -747,6 +847,27 @@ fn a_human_answer_is_not_applied_to_a_changed_dialog() {
         "{:?}",
         l.last_status
     );
+}
+
+#[test]
+fn a_live_dialog_stop_reconciles_without_a_live_session() {
+    for dead in [false, true] {
+        let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
+        fx.driver.set_tail(&sess, DIALOG_PANE);
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+        let id = parked_dialog_id(&fx);
+        if dead {
+            fx.driver.set_pane_dead(&sess, true);
+        } else {
+            fx.driver.set_alive(&sess, false);
+        }
+
+        assert_eq!(
+            fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+            JobTick::Escalated(vec![id])
+        );
+        assert_eq!(ledger(&fx).open_stops.len(), 1);
+    }
 }
 
 #[test]
@@ -846,6 +967,23 @@ fn a_meta_choice_stays_attach_only() {
     let id = parked_dialog_id(&fx);
     fx.clock.set(START + 1);
     answer_dialog(&fx, &id, "Type something.", fx.clock.now());
+
+    assert_eq!(
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+        JobTick::Escalated(vec![id])
+    );
+    assert!(fx.driver.applied_dialog_selections().is_empty());
+}
+
+#[test]
+fn a_dashboard_answer_that_names_no_concrete_dialog_option_stays_attach_only() {
+    let (mut fx, sess) = marker_fx(Tier::Autopilot, |_| {});
+    fx.sched.set_supervisor_enabled(false);
+    fx.driver.set_tail(&sess, CHOICE_DIALOG_PANE);
+    fx.sched.tick(&fx.driver, &fx.clock).unwrap();
+    let id = parked_dialog_id(&fx);
+    fx.clock.set(START + 1);
+    answer_dialog(&fx, &id, "missing option", fx.clock.now());
 
     assert_eq!(
         fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
@@ -1145,5 +1283,51 @@ fn human_answer_resets_the_marker_less_counter_in_on_blocked() {
         ledger(&fx).marker_less_rechecks,
         0,
         "on_blocked resets the marker-less counter"
+    );
+}
+
+#[test]
+fn a_trae_answer_resume_uses_trae_activity_detection() {
+    let mut fx = setup_with(Tier::Standard, Engine::Trae, Some(300), |l| {
+        l.conversation_id = Some("convo-1".into());
+        l.run = JobRun::Blocked {
+            stop_ids: vec!["stop-x".into()],
+            since: START,
+        };
+        l.open_stops = vec![open_stop(
+            "stop-x".into(),
+            StopKind::Ambiguity,
+            None,
+            "",
+            &[],
+            START,
+        )];
+    });
+    let sess = loop_session(&fx);
+    fx.driver.set_alive(&sess, true);
+    fx.driver.set_tail(
+        &sess,
+        concat!(
+            "◈ Any second now… (17s • ↓ 149 tokens • esc to interrupt)\n",
+            "──────────────────────────────────────────────── Working ─\n",
+            "❯ Explain this codebase\n",
+            "───────────────────────────────────────────────────────────\n",
+        ),
+    );
+    fx.clock.set(START + 1);
+    push_answer(&fx, "stop-x", Some("keep going"), fx.clock.now());
+
+    assert_eq!(
+        fx.sched.tick(&fx.driver, &fx.clock).unwrap(),
+        JobTick::Monitoring {
+            until: START + 1 + BUSY_RECHECK_S
+        }
+    );
+    assert!(fx.driver.sent_keys().is_empty());
+    assert_eq!(
+        ledger(&fx).pending_context.as_deref(),
+        Some(
+            "The human resolved these — treat them as binding and continue:\n- stop-x: answered (keep going)"
+        )
     );
 }

@@ -40,6 +40,28 @@ impl ProjectPaths {
             session_seg: Some(seg),
         }
     }
+    pub fn from_state_dir(state_dir: impl Into<PathBuf>) -> Option<Self> {
+        let state_dir = state_dir.into();
+        if state_dir.file_name()?.to_str()? == STATE_DIR {
+            return Some(Self {
+                root: state_dir.parent()?.to_path_buf(),
+                session_seg: None,
+            });
+        }
+        let seg = state_dir.file_name()?.to_str()?.to_string();
+        let sessions = state_dir.parent()?;
+        if sessions.file_name()?.to_str()? != "sessions" {
+            return None;
+        }
+        let state_root = sessions.parent()?;
+        if state_root.file_name()?.to_str()? != STATE_DIR {
+            return None;
+        }
+        Some(Self {
+            root: state_root.parent()?.to_path_buf(),
+            session_seg: Some(seg),
+        })
+    }
     pub fn state_dir(&self) -> PathBuf {
         let base = self.root.join(STATE_DIR);
         match &self.session_seg {
@@ -200,6 +222,9 @@ impl ProjectPaths {
     /// the session's FIRST completed turn, which is the price of asking the engine rather than
     /// guessing from its open files. SIBLING of `turn_signal` in this same directory, which is
     /// what lets the hook builder derive one path from the other.
+    ///
+    /// TraeX's thread id lands here too: `pmtui hook turn-complete` writes the `session_id` of its
+    /// `Stop` payload, with the same contract.
     pub fn codex_conversation_id(&self) -> PathBuf {
         self.daemon_dir().join("conversation-id")
     }
@@ -260,7 +285,7 @@ impl ProjectPaths {
     pub fn codex_project_skill_file(&self) -> PathBuf {
         self.canonical_worker_skill_file()
     }
-    /// The canonical project skill path for either worker engine.
+    /// The canonical project skill path for any worker engine that reads repository skills.
     pub fn native_worker_skill_file(&self, _engine: crate::registry::Engine) -> PathBuf {
         self.canonical_worker_skill_file()
     }
@@ -294,28 +319,4 @@ fn fnv8(s: &str) -> String {
         h = h.wrapping_mul(0x0100_0193);
     }
     format!("{h:08x}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn directive_path_is_a_state_dir_sibling_of_brief() {
-        let p = ProjectPaths::for_session("/tmp/proj", "sess-1");
-        assert_eq!(p.directive(), p.state_dir().join("directive.md"));
-        assert_eq!(p.directive().parent(), p.brief().parent());
-    }
-
-    #[test]
-    fn advice_last_message_is_a_per_seq_sibling_of_the_advice_log() {
-        let p = ProjectPaths::new(std::path::PathBuf::from("/tmp/proj"));
-        assert_eq!(
-            p.advice_last_message(7),
-            p.steps_dir().join("advice-7.last")
-        );
-        // Distinct from the log and the done-signal so a codex verdict file cannot collide with them.
-        assert_ne!(p.advice_last_message(7), p.advice_log(7));
-        assert_ne!(p.advice_last_message(7), p.advice_done_signal(7));
-    }
 }

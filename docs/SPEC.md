@@ -43,8 +43,9 @@ An agent that works alone has two opposite faults:
 - it stops the person to ask about routine choices that the goal already answers; or
 - it becomes idle, blocked, repetitive or unavailable, and does not make this clear.
 
-agent-manager keeps Claude and Codex sessions at work on a goal that a person writes. It sends only the
-decisions that a person must make to that person.
+agent-manager manages Claude, Codex, and TRAE CLI sessions around a goal that a person writes.
+TRAE CLI launches use the current `traex` binary. Autopilot keeps Claude, Codex, and TRAE CLI sessions
+at work. It sends only the decisions that a person must make to that person.
 
 agent-manager adds automation above the permission modes of the engines. It does not replace those modes,
 and it does not give permission to use a tool.
@@ -64,7 +65,7 @@ yourself.
 
 ### In Scope
 
-- persistent Claude and Codex sessions;
+- persistent Claude, Codex, and TRAE CLI sessions;
 - the Standard mode and the Autopilot mode;
 - nudges, monitoring, and detection of no progress;
 - decisions that a worker raises, and the terminal menus that the product can read;
@@ -81,7 +82,7 @@ yourself.
 - a workflow engine that makes its own plan;
 - publishing, merging, deployment, use of credentials, payments or destructive actions without a person;
 - a statement that a project is complete, without a person;
-- any way around the permission, trust or command approval of Claude or Codex; or
+- any way around the permission, trust or command approval of Claude, Codex, or TRAE CLI; or
 - a dashboard that hides the agent from the person.
 
 ## 3. Product Model
@@ -92,7 +93,7 @@ yourself.
 |---|---|
 | **Dashboard** | the view and the controls for the person |
 | **Supervisor** | the driver for Autopilot sessions. It is optional. |
-| **Worker** | the Claude or Codex agent that does the project work |
+| **Worker** | the Claude, Codex, or TRAE CLI agent that does the project work |
 | **Decider** | a read-only consult that answers one routine decision from the goal and the project |
 
 ### Technical Names
@@ -297,9 +298,13 @@ time. The engines give no way to ask for a final result, so time is all that a s
 
 ### The Spawn Procedure
 
-Each launch that names the dashboard program first installs the spawn procedure into the project directory
-of the session. It installs the procedure in the form that the engine of the worker can find. A launch
-that names no dashboard program installs nothing, because the command in the procedure could not run.
+Each managed sweep that names the dashboard program installs or refreshes the spawn procedure in the
+project directory of the session. It installs the procedure in the form that the engine of the worker can
+find. A sweep that names no dashboard program installs nothing, because the command in the procedure could
+not run.
+The shared procedure is engine-neutral. A TraeX form adds a provider-specific routing instruction: requests
+to delegate work, spawn a worker, create a subagent, or use a general-purpose agent must use the
+`pmtui-spawn` skill and `pmtui spawn`, not TraeX native subagents.
 
 The procedure tells the worker to:
 
@@ -419,6 +424,8 @@ person can select Autopilot later. A fork MUST NOT make a git branch, a worktree
 
 - A live source MUST be free of a person and stably idle before a fork.
 - If the product cannot prove the identity of the conversation, it refuses the fork and says what to do.
+- A TRAE fork MUST use the source identity reported by its engine hook. A saved thread name MUST NOT
+  replace that report or prevent its use, because a name does not identify a resumable thread.
 - A fork either publishes a child that runs, or removes what it staged.
 - If the product cannot stop the terminal of the child, it keeps the disabled row. It MUST NOT hide a live
   process.
@@ -453,12 +460,15 @@ Before it sends, the dashboard MUST re-read the pane and prove that the pane is 
 composer. This gate may scan the whole tail captured for the send, because prompts can sit above engine
 footer lines, but it MUST still fail closed when the pane shows a dialog.
 
-The gate MUST recognise Claude's prompt by its place, inside the input box between two rules, and not by
-the words it shows, because those words change between releases. It MUST refuse when the box holds text
+the words it shows, because those words change between releases. The top rule may carry a title. It MUST refuse when the box holds text
 a person typed and did not submit, because the send would join the two and submit both. It tells that
-text from Claude's hint by the hint's dim style, so it MUST read the pane with its styles. It MUST also
-refuse when a state that takes keys or holds the turn is drawn around the box, such as a feedback survey
-or a usage-limit notice. When the gate cannot tell, it refuses.
+text from Claude's hint by the hint's dim style, or grey colour, so it MUST read the pane with its styles.
+It MUST also refuse while a state that takes keys or holds the turn is drawn by the box, such as Claude's
+feedback survey or a usage-limit notice. When the gate cannot tell, it refuses.
+
+The driver's nudge follows the same rules. Read without styles, a box that holds any text is busy, because
+the hint and a draft are the same characters. The driver reads the pane with its styles before a nudge, so
+a box that holds only the hint is idle, and a box that holds a draft or sits under the survey is busy.
 
 An open composer stays with its session. While the composer is open, a key MUST NOT move the selection, and
 a pointer action MUST NOT move it.
@@ -537,6 +547,11 @@ that installs.
   one running. That disagreement is why an update appears to do nothing on a machine whose binaries
   point at a local build.
 - A build that no installer placed MUST say so, and MUST NOT report a check that failed.
+- A person MAY start a local daily build with `--channel daily`. This is a one-shot channel
+  selection, not a saved preference. It resolves the daily build from the current checkout,
+  stops only the driver for the selected registry and socket, waits for that driver to release
+  its lock, and then runs the daily dashboard with the same registry and socket. It MUST NOT
+  stop project terminals.
 - The installer takes the terminal for an update, as an editor does.
 - A REPLACED BINARY IS NO USE TO A LOADED PROCESS. After an update the dashboard restarts itself on
   the new build, keeping the registry and socket it was given. A restart MUST NOT disturb a project
@@ -585,6 +600,22 @@ For each Autopilot session that is enabled, the supervisor:
 The supervisor MUST NOT make a second conversation for Autopilot. The person and the supervisor use one
 persistent terminal.
 
+The supervisor MAY install an engine hook that records a completed turn. Claude uses a Stop hook. Codex
+uses its notify hook. TRAE CLI uses `hooks.Stop` with `pmtui hook turn-complete` and
+`hooks.SessionStart` with `pmtui hook session-start`; those commands derive paths from the managed-session
+environment, so the trusted hook command is stable across sessions. They MUST run the `PMTUI_BIN` supplied
+by the managed environment and MUST NOT fall back to a `pmtui` found on PATH. `PM_TURN_HOOK=off`, `0`, or
+`false` disables hook injection for each engine. The product MUST NOT bypass hook trust. If the engine asks
+a person to review the hook, the prompt stays in the terminal for that person.
+
+Project-local skills MUST be written once under `.agents/skills/`, which Codex and TraeX discover. Claude
+MAY also receive exact per-skill compatibility symlinks under `.claude/skills/`. The product MUST NOT
+create or edit the user's `AGENTS.md` to deliver a skill.
+
+The product MAY install worker skills before a terminal starts, so engines that read skills only at
+startup can use them after a mode change. TraeX nudges MUST include the report requirements because
+an existing terminal may not have loaded the worker skill.
+
 If an Autopilot session waits for a decision from a person, and the product cannot read its mode setting,
 the supervisor stays available. It MUST NOT type until it can read the setting again. An explicit Standard
 setting stays in force.
@@ -626,7 +657,16 @@ look stalled. A live busy terminal is newer evidence, and the product continues 
 **On a session that the supervisor does not drive, live activity wins over recorded state.** Nothing
 advances the record of that session, so the record stays as it was when the mode last changed. A working
 terminal therefore sets the state that the dashboard shows. The open decision stays in the record and
-stays visible. Only the claim that the product waits for a person goes away.
+stays visible. Only the claim that the product waits for a person goes away. For TRAE CLI, a hook or
+turn signal from the last driven state is not authority after the session leaves Autopilot; the live
+terminal is the newer source.
+
+For TRAE CLI, a resumed thread remains unconfirmed until the worker writes a marker or the hook writes a
+thread id after the resume launch. If that hook id is different from the attempted resume id, the product
+MUST use the new hook id and MUST mark it confirmed only if the hook write is newer than the recorded
+launch baseline. A stale prior hook write MUST NOT by itself confirm the resume, even if its id differs
+from the recorded conversation. A dashboard Enter on a dead terminal MUST NOT repeat an unconfirmed
+TraeX resume; it MUST use the fresh-start path.
 
 A session that is idle at its prompt with an open decision still needs a person. A decision on a session
 that the supervisor does drive keeps its place.
@@ -658,6 +698,10 @@ failure.
 
 The inactivity window of a busy worker restarts only if the content of the terminal changes in a way that
 has meaning. A spinner, a counter, a token count, a placeholder and a clock are not progress.
+
+Blank padding inside the TRAE input box MUST NOT cause its rotating placeholder or footer to count
+as transcript changes. Activity detection and progress detection MUST use the same input boundary,
+so an idle row can settle and a stalled worker can reach the inactivity bound.
 
 Progress on the terminal never pays a report debt, never gives permission, and never allows input. It only
 stops the product from reading active work as a silent stall.
@@ -814,8 +858,8 @@ Autopilot handles a decision in three separate layers:
 
 1. **The fixed boundary.** Categories and explicit effects name the decisions that stay with a person.
 2. **The goal-aware answer.** The read-only decider takes the routine decisions that are eligible.
-3. **The permission of the engine.** Claude or Codex still enforces its own permission, trust and command
-   approval for each tool action.
+3. **The permission of the engine.** Claude, Codex, or TRAE CLI still enforces its own permission,
+   trust and command approval for each tool action.
 
 To pass one layer MUST NOT give a way past another layer.
 
@@ -839,6 +883,10 @@ These decisions stay with a person:
 - confirmation that the goal is complete; and
 - any decision that is still unsafe, or that the product cannot classify or validate.
 
+A change that can be reverted still stays with a person if it crosses another boundary.
+Major migrations of security-critical dependencies and removal of security audit evidence
+are changes to security, even when the goal is routine maintenance.
+
 ### The Goal-aware Decider
 
 The decider answers whether one routine decision moves the goal forward, and says what the worker must do.
@@ -861,6 +909,13 @@ The product reviews more than one routine decision in sequence. One answer autho
 failure or a refusal on one decision MUST NOT authorize a sibling, and MUST NOT escalate a valid sibling.
 
 If the decider is not available, the decisions that wait stay visible and go to a person.
+
+The person MAY select Claude, Codex or TRAE as the decider, independently of the worker.
+Changing to or from TRAE, or changing its selected model, MUST let the supervisor try the new selection
+after a transport failure. A TRAE failure MUST NOT disable a working Claude or Codex selection.
+Claude and Codex otherwise retain their existing failure recovery behavior.
+An unchanged selection MUST keep its failure state across a restart.
+A consult already in progress MUST keep its original answer source until it ends.
 
 ### The Directive
 
@@ -1023,7 +1078,9 @@ happen again. A restart MUST NOT do any of these:
   that closed.
 - To resume or to restart a conversation needs an exact identity.
 - Some engines do not accept an identity from the product. For those, the product MUST learn the identity
-  the engine assigned, and MUST keep it with the session.
+  the engine assigned, and MUST keep it with the session. An engine that accepts a name from the product
+  but cannot resume by that name is in this group, and the product MUST resume it only by the identity
+  the engine reported.
   - It MUST take that identity from what the engine itself reports. It MUST NOT read the private files of
     a running engine to guess it.
   - To restart such a session MUST resume the identity it learned. A restart MUST NOT start a second
@@ -1032,10 +1089,13 @@ happen again. A restart MUST NOT do any of these:
     recorded it rather than only where some earlier decision happened to be written.
   - An identity it cannot read, or one that no longer looks like an identity, MUST read as "not known
     yet". The product then starts one conversation, and never passes an unusable value to the engine.
-  - An engine reports its identity only after its first turn of work ends. Until then the session has no
-    identity, and the product says so rather than inventing one.
+  - An engine MAY report its identity at startup or after a completed turn. Until it does, the session
+    has no identity, and the product says so rather than inventing one. A startup identity MUST NOT
+    count as a completed turn.
   - The identity comes from the engine. The product MUST NOT take it from the worker's own report, and
     MUST NOT ask a worker for it: a worker could name the conversation of another session.
+    This also applies before the first engine report: a worker claim MUST NOT fill an empty
+    identity in the runtime state.
   - The product MUST reconcile the identity it learns during its ordinary work, not only when it starts a
     terminal. A session that is running MUST NOT be left without the identity the engine has reported.
 - At most one supervisor drives one fleet. At most one dashboard changes it at a time.

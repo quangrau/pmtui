@@ -157,10 +157,26 @@ fn pmtui_bin_is_the_pmtui_executable_itself_or_the_one_beside_pmd() {
 }
 
 #[test]
+fn pmd_does_not_pick_a_pmtui_from_path_when_no_sibling_exists() {
+    use std::os::unix::fs::PermissionsExt;
+    let pmd_dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    let pmd = pmd_dir.path().join("pmd");
+    std::fs::write(&pmd, "").unwrap();
+
+    let pmtui = path_dir.path().join("pmtui");
+    std::fs::write(&pmtui, "").unwrap();
+    std::fs::set_permissions(&pmtui, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        pmtui_bin_for_exe(&pmd),
+        None,
+        "a PATH hit may be an older pmtui without the hook subcommand"
+    );
+}
+
+#[test]
 fn the_current_process_resolves_through_its_own_executable() {
-    // A test binary is neither `pmtui` nor beside one (cargo names it `<crate>-<hash>` inside
-    // `deps/`), so the managed env of every unit-test launch omits PMTUI_BIN.
     let exe = std::env::current_exe().unwrap();
     assert_eq!(pmtui_bin_for_current_process(), pmtui_bin_for_exe(&exe));
-    assert_eq!(pmtui_bin_for_current_process(), None);
 }

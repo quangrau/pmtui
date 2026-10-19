@@ -60,12 +60,13 @@ impl JobScheduler {
         if !alive || !self.worker_skill_installed {
             self.install_worker_skill();
         }
+        // Refresh the delegated-worker procedure before the alive early return. Existing TraeX
+        // panes keep running across pmd upgrades, so launch-time-only installation leaves them
+        // with stale skill metadata and lets engine-native subagents win skill selection.
+        self.install_spawn_skill();
         if alive {
             return Ok(EnsureOutcome::AlreadyUp);
         }
-        // The spawn skill ships only with a terminal pmd itself starts, and only when that
-        // terminal names pmtui (`PMTUI_BIN`): an adopted pane keeps its launcher's environment.
-        self.install_spawn_skill();
         // Resolve (and, for a first-time claude session with no id, mint+pin) the
         // conversation id, persisting any mint/adopt onto the ledger below. The
         // returned [`Resume`] distinguishes a fresh mint (CREATE via `--session-id`)
@@ -80,14 +81,15 @@ impl JobScheduler {
         // `idle_fingerprint` content-stability gate. When on, the engine appends one byte to
         // `paths.turn_signal()` on every completed turn (see `worker::build_loop_command`).
         let turn_signal = self.paths.turn_signal();
-        let hook_on = worker::turn_hook_enabled();
+        let hook_signal = worker::turn_hook_runnable_for(self.engine, self.pmtui_bin.as_deref())
+            .then_some(turn_signal.as_path());
         // Directory trust remains the engine's own prompt. pmd never injects a
         // profile or modifies the user's Codex configuration.
         let argv = worker::build_loop_command(
             self.engine,
             &resume,
             std::slice::from_ref(&self.work_dir),
-            hook_on.then_some(turn_signal.as_path()),
+            hook_signal,
             self.worker_model.as_deref(),
         );
         // The old pane's decision is stale before a replacement worker is started. Termination
@@ -158,21 +160,8 @@ impl JobScheduler {
     /// Write the canonical worker `SKILL.md`; Claude additionally gets its exact per-skill alias.
     /// A failure is retried on a later sweep. NEVER creates/modifies the user's `AGENTS.md`.
     fn install_worker_skill(&mut self) {
-        let canonical = self.paths.canonical_worker_skill_file();
-        let canonical_parent_ready = canonical
-            .parent()
-            .map(std::fs::create_dir_all)
-            .transpose()
-            .is_ok();
-        let canonical_written = canonical_parent_ready
-            && crate::state::write_text_atomic(&canonical, crate::skills::WORKER_SKILL_MD).is_ok();
-        let engine_ready = match self.engine {
-            crate::registry::Engine::Claude => {
-                crate::skills::ensure_claude_worker_skill_link(&self.paths).is_ok()
-            }
-            crate::registry::Engine::Codex => true,
-        };
-        self.worker_skill_installed = canonical_written && engine_ready;
+        self.worker_skill_installed =
+            crate::skills::install_worker_skill(&self.paths, self.engine).is_ok();
         if !self.worker_skill_installed {
             eprintln!(
                 "worker-skill native install failed for {} ({})",
@@ -182,8 +171,8 @@ impl JobScheduler {
         }
     }
 
-    /// Ship the pmtui-spawn skill with the terminal about to launch when pmd names pmtui in it.
-    /// Best effort: a failure is logged and never blocks the launch; `pmd doctor` reports the
+    /// Ship or refresh the pmtui-spawn skill when pmd can name pmtui in the managed environment.
+    /// Best effort: a failure is logged and never blocks the session; `pmd doctor` reports the
     /// missing or stale skill. NEVER creates/modifies the user's `AGENTS.md`.
     fn install_spawn_skill(&self) {
         if let Err(error) = crate::skills::install_spawn_skill_for_launch(
@@ -230,6 +219,64 @@ impl JobScheduler {
     /// Self-heals the rare created-but-crashed-pre-turn case: the create hits "already in
     /// use", dies, but the flag is already cleared, so the next relaunch resumes.
     fn resolve_conversation_id(&mut self, next: &mut AgentLoopState) -> Resume {
+        // TraeX RESUMES ONLY THE ID ITS OWN HOOK REPORTED. A `--session-id` we gave it is stored
+        // as a thread NAME, and `traex resume <uuid>` looks a UUID up as a thread id only, so a
+        // name in the ledger or the registry never resumes, turn or no turn (measured on traex
+        // 0.209.1). Until the hook reports a thread, start one; nothing is lost, because a
+        // conversation that never completed a turn has nothing to resume. A reported thread gets
+        // one unconfirmed resume attempt. A newer same-id hook write confirms that the resume
+        // reached TraeX even if the worker dies before its first marker; a stale revision still
+        // falls back to a fresh conversation once.
+        if self.engine == Engine::Trae {
+            return match super::marker::reported_identity_revision(
+                &self.paths.codex_conversation_id(),
+            ) {
+                Some((id, revision)) => {
+                    // A changed id cannot turn an old hook write into proof that this resume
+                    // reached TraeX. The relaunch path must enforce the same baseline as tick.
+                    if next.resume_unconfirmed {
+                        if next
+                            .conversation_id_revision
+                            .as_ref()
+                            .is_some_and(|prior| prior != &revision)
+                        {
+                            next.conversation_id = Some(id.clone());
+                            next.resume_unconfirmed = false;
+                            next.conversation_id_revision = Some(revision);
+                            return Resume::Continue(id);
+                        }
+                        if next.conversation_id_revision.is_none() {
+                            next.conversation_id = Some(id.clone());
+                            next.conversation_id_revision = Some(revision);
+                            return Resume::Continue(id);
+                        }
+                        next.conversation_id = None;
+                        next.resume_unconfirmed = false;
+                        next.conversation_id_revision = None;
+                        let _ = std::fs::remove_file(self.paths.codex_conversation_id());
+                        return self.mint_or_fresh(next);
+                    }
+                    if !next.resume_unconfirmed
+                        && next.conversation_id.as_deref() == Some(id.as_str())
+                        && next
+                            .conversation_id_revision
+                            .as_ref()
+                            .is_some_and(|prior| prior == &revision)
+                    {
+                        return Resume::Continue(id);
+                    }
+                    next.conversation_id = Some(id.clone());
+                    next.resume_unconfirmed = true;
+                    next.conversation_id_revision = Some(revision);
+                    Resume::Continue(id)
+                }
+                None => {
+                    next.resume_unconfirmed = false;
+                    next.conversation_id_revision = None;
+                    self.mint_or_fresh(next)
+                }
+            };
+        }
         if let Some(id) = next.conversation_id.clone() {
             // Reached only when the session is NOT alive (AlreadyUp early-returns above),
             // so an unconfirmed cid here means the prior seed-resume launch died: the seed
@@ -277,14 +324,14 @@ impl JobScheduler {
     }
 
     /// The tail of [`JobScheduler::resolve_conversation_id`] for a session with NO ledger
-    /// cid and NO registry seed: claude mints+pins a fresh uuid and CREATES it; codex has
-    /// no caller-chosen id, so a fresh interactive session whose id is captured later.
+    /// cid and NO registry seed: caller-pinned engines mint+pin a fresh uuid and CREATE it; codex
+    /// has no caller-chosen id, so a fresh interactive session whose id is captured later.
     fn mint_or_fresh(&self, next: &mut AgentLoopState) -> Resume {
         match self.engine {
             // A freshly minted uuid is CREATED, never a stale seed, so it stays CONFIRMED
             // (`resume_unconfirmed` untouched at its `false` default): a later relaunch
             // resumes it.
-            Engine::Claude => {
+            Engine::Claude | Engine::Trae => {
                 let id = mint_uuid_v4();
                 next.conversation_id = Some(id.clone());
                 Resume::Fresh {

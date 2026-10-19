@@ -65,6 +65,8 @@ fn create_form_navigation_and_editing() {
     f.adjust(true);
     assert_eq!(f.decider_engine, Engine::Codex);
     f.adjust(false);
+    assert_eq!(f.decider_engine, Engine::Trae);
+    f.adjust(true);
     assert_eq!(f.decider_engine, Engine::Claude);
     // Decider Model is the LAST field (index 7), APPENDED after Decider — shown here because
     // the walk switched to Autopilot above. A ←→ stepper like the worker model: → steps the value.
@@ -81,6 +83,29 @@ fn create_form_navigation_and_editing() {
     assert_eq!(f.field, CreateForm::ENGINE);
     f.prev_field();
     assert_eq!(f.field, CreateForm::DECIDER_MODEL);
+}
+
+#[test]
+fn worker_engine_cycles_through_all_engines_but_decider_stays_two_engine() {
+    let mut f = CreateForm::new();
+    f.field = CreateForm::ENGINE;
+    assert_eq!(f.engine, Engine::Claude);
+    f.adjust(true);
+    assert_eq!(f.engine, Engine::Codex);
+    f.adjust(true);
+    assert_eq!(f.engine, Engine::Trae);
+    f.adjust(true);
+    assert_eq!(f.engine, Engine::Claude);
+
+    f.field = CreateForm::DECIDER;
+    f.tier = Tier::Autopilot;
+    assert_eq!(f.decider_engine, Engine::Claude);
+    f.adjust(true);
+    assert_eq!(f.decider_engine, Engine::Codex);
+    f.adjust(true);
+    assert_eq!(f.decider_engine, Engine::Trae);
+    f.adjust(true);
+    assert_eq!(f.decider_engine, Engine::Claude);
 }
 
 #[test]
@@ -185,7 +210,7 @@ fn create_form_adjustments_respect_numeric_and_cycle_boundaries() {
     f.field = CreateForm::ENGINE;
     f.engine = Engine::Codex;
     f.adjust(false);
-    assert_eq!(f.engine, Engine::Claude);
+    assert_eq!(f.engine, Engine::Trae);
 
     f.field = CreateForm::AUTONOMY;
     f.tier = Tier::Standard;
@@ -477,6 +502,8 @@ fn decider_field_is_autopilot_only_and_defaults_to_claude() {
     form.field = CreateForm::DECIDER;
     form.adjust(true);
     assert_eq!(form.decider_engine, Engine::Codex);
+    form.adjust(true);
+    assert_eq!(form.decider_engine, Engine::Trae);
     form.adjust(true);
     assert_eq!(form.decider_engine, Engine::Claude);
 }

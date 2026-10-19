@@ -33,6 +33,7 @@ impl App {
         self.mode = UiMode::Sending {
             target: SendTarget {
                 id,
+                engine: e.engine,
                 root: e.root.clone(),
                 session,
                 agent_loop: true,
@@ -233,10 +234,11 @@ impl App {
             .agent_tmux
             .capture_tail_styled(&t.session, SEND_GATE_LINES)
             .context("re-read pane before send")?;
-        if pane_refusal(&capture).is_some() {
-            anyhow::bail!("the pane changed while the message was waiting");
+        if let Some(why) = pane_refusal(t.engine, &capture) {
+            anyhow::bail!("the pane changed while the message was waiting: {why}");
         }
-        self.agent_tmux.send_keys(&t.session, &payload)
+        self.agent_tmux
+            .send_keys_for_engine(&t.session, &payload, t.engine)
     }
 
     /// Ctrl+E in the send field: hand off to `$EDITOR`, seeded with what has been typed.

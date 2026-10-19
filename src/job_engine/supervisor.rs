@@ -13,6 +13,7 @@ use anyhow::Result;
 use crate::advise::{self, Consult, Refusal};
 use crate::clock::Epoch;
 use crate::job::{self, AgentLoopState, AutopilotEventKind, JobRun};
+use crate::registry::Engine;
 use crate::tmux::{self, Driver};
 use crate::worker;
 
@@ -162,7 +163,64 @@ pub(super) struct DeciderSkip<'a> {
     pub(super) effect: Option<crate::worker::StopEffect>,
 }
 
+/// Health follows the model actually launched, including an environment override,
+/// so changing that override while pmd is stopped can recover a failed transport.
+fn resolved_decider_model(engine: Engine, model: Option<&str>) -> Option<String> {
+    if let Some(model) = model.filter(|model| !model.trim().is_empty()) {
+        return Some(model.to_string());
+    }
+    match engine {
+        Engine::Claude => Some(
+            std::env::var(worker::SUPERVISOR_MODEL_ENV)
+                .ok()
+                .filter(|model| !model.trim().is_empty())
+                .unwrap_or_else(|| worker::SUPERVISOR_MODEL.to_string()),
+        ),
+        Engine::Codex => std::env::var(worker::SUPERVISOR_CODEX_MODEL_ENV)
+            .ok()
+            .filter(|model| !model.trim().is_empty())
+            .map(|model| model.trim().to_string()),
+        Engine::Trae => std::env::var(worker::SUPERVISOR_TRAE_MODEL_ENV)
+            .ok()
+            .filter(|model| !model.trim().is_empty())
+            .map(|model| model.trim().to_string()),
+    }
+}
+
 impl JobScheduler {
+    pub(super) fn reconcile_decider_selection(
+        &mut self,
+        engine: crate::registry::Engine,
+        model: Option<&str>,
+    ) {
+        // An old consult must finish against its original health and verdict source. The next
+        // consult (or idle tick) adopts the new selection after that debt has been resolved.
+        if self.advise.is_some() || self.advise_orphaned.is_some() {
+            return;
+        }
+        // Only TraeX tracks a selection baseline; other engines need no model lookup here.
+        if engine != Engine::Trae
+            && !self
+                .advise_selection
+                .as_ref()
+                .is_some_and(|prior| prior.engine == Engine::Trae)
+        {
+            return;
+        }
+        let selection = (engine == Engine::Trae).then(|| job::DeciderHealthSelection {
+            engine,
+            model: resolved_decider_model(engine, model),
+        });
+        if self.advise_selection == selection {
+            return;
+        }
+        self.advise_health = super::fallback::AdviseHealth::default();
+        self.advise_binary = None;
+        // TraeX failures must not follow a switch back to another engine. Claude/Codex still
+        // keep their own latch across model edits, so old ledgers need no selection baseline.
+        self.advise_selection = selection;
+    }
+
     pub(super) fn cleanup_completed_advice_artifacts(&self, state: &AgentLoopState) {
         let active = state.advice_inflight.as_ref().map(|parked| parked.seq);
         let mut cleaned_through = self.advice_cleanup_seq.get();
@@ -316,6 +374,7 @@ impl JobScheduler {
         decider_engine: crate::registry::Engine,
         decider_model: Option<&str>,
     ) -> Result<AdviceSpawn> {
+        self.reconcile_decider_selection(decider_engine, decider_model);
         if !self.advise_enabled || self.advise_health.latched {
             return Ok(AdviceSpawn::Unavailable);
         }
@@ -408,6 +467,7 @@ impl JobScheduler {
             effect,
             policy,
         } = decider;
+        self.reconcile_decider_selection(decider_engine, decider_model);
         // A missing binary does not fail `spawn_step`: its shell exits 127 later.
         // Probe first so a missing binary reaches the human without paying for a doomed consult.
         let decider_bin = decider_engine.bin();
@@ -423,41 +483,23 @@ impl JobScheduler {
         }
         let seq = self.next_decider_seq();
         let session = tmux::supervisor_session_name(&self.project_id, &self.work_dir, seq);
-        // Milestone E: the decider skill is APPENDED to the consult's `--system-prompt` because the
-        // consult runs `--bare` (which disables skill auto-discovery, so a file-based skill cannot
-        // reach it). The `SUPERVISOR_SYSTEM_PROMPT` const now carries a conditional DIRECTIVE
-        // paragraph (added for the human-directive channel), but C's supervisor tests assert its
-        // exact SUBSTRINGS via `.contains()`, so those still hold; the decider body is purely
-        // additive after it.
-        let system_prompt = format!(
-            "{}\n\n{}",
-            advise::SUPERVISOR_SYSTEM_PROMPT,
-            crate::skills::DECIDER_SKILL_MD
-        );
-        // Dispatch on the SELECTED engine. The claude arm is byte-for-byte the pre-switch path
-        // (model pin + `--json-schema` + opt-in budget, verdict read from the tee'd log); the
-        // codex arm builds `codex exec … --output-last-message <path>` and points the reap at that
-        // isolated file. `advise::validate` re-derives every guarantee from whatever the engine
-        // emits, so a non-verdict reply on either arm escalates rather than being trusted.
-        let (argv, verdict_path, resolved_model) = match decider_engine {
-            crate::registry::Engine::Claude => {
-                // The pinned model is overridable because WHICH id resolves is deployment
-                // specific, and a wrong one fails SILENTLY (see `build_supervisor_command`).
-                // The per-session `config.decider_model` wins when set; otherwise the existing
-                // env→const fallback is used byte-for-byte (backward-compat: the decider
-                // benchmark relies on the unset behaviour). An empty/whitespace override reads
-                // as unset (filtered here, exactly like the env branch below does its own).
-                let model = decider_model
-                    .filter(|s| !s.trim().is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
-                        std::env::var(worker::SUPERVISOR_MODEL_ENV)
-                            .ok()
-                            .filter(|s| !s.trim().is_empty())
-                            .unwrap_or_else(|| worker::SUPERVISOR_MODEL.to_string())
-                    });
+        // Milestone E: the decider skill is appended to the consult's system prompt because
+        // headless consults cannot rely on engine skill discovery. Claude runs `--bare`, and
+        // exec-style engines may not load project skills before they read the prompt. The
+        // fixed supervisor prompt still owns the non-worker-influenced policy; the skill body
+        // is purely additive protocol text after it.
+        let system_prompt = advise::supervisor_system_prompt_for_engine(decider_engine);
+        // Dispatch on the SELECTED engine. Each arm owns its launch and verdict source so a
+        // provider's CLI or lifecycle change cannot silently alter another provider's contract.
+        // `advise::validate` re-derives every guarantee from whatever the engine emits, so a
+        // non-verdict reply on any arm escalates rather than being trusted.
+        let resolved_model = resolved_decider_model(decider_engine, decider_model);
+        let (argv, verdict_path) = match decider_engine {
+            Engine::Claude => {
                 let argv = worker::build_supervisor_command(
-                    &model,
+                    resolved_model
+                        .as_deref()
+                        .unwrap_or(worker::SUPERVISOR_MODEL),
                     &system_prompt,
                     advise::OUTPUT_SCHEMA,
                     &advise::build_consult_prompt(&consult),
@@ -472,32 +514,35 @@ impl JobScheduler {
                         .filter(|s| !s.is_empty())
                         .as_deref(),
                 );
-                (argv, None, Some(model))
+                (argv, None)
             }
-            crate::registry::Engine::Codex => {
-                // Opt-in model pin (codex resolves a default itself); no `--json-schema`/budget.
-                // The per-session `config.decider_model` wins when set; otherwise the existing
-                // env→`None` fallback. `None`/empty ⇒ no `-m`, exactly as the builder documents:
-                // an empty/whitespace override is filtered here so it behaves identically to `None`.
-                let model = decider_model
-                    .filter(|s| !s.trim().is_empty())
-                    .map(str::to_string)
-                    .or_else(|| {
-                        std::env::var(worker::SUPERVISOR_CODEX_MODEL_ENV)
-                            .ok()
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                    });
+            Engine::Codex => {
                 let last = self.paths.advice_last_message(seq);
+                let prompt = advise::build_consult_prompt(&consult);
+                let last_text = last.to_string_lossy();
                 let argv = worker::build_supervisor_command_codex(
-                    model.as_deref(),
+                    resolved_model.as_deref(),
                     &system_prompt,
-                    &advise::build_consult_prompt(&consult),
-                    &last.to_string_lossy(),
+                    &prompt,
+                    &last_text,
                     SUPERVISOR_SHELL_TIMEOUT_S,
                     SUPERVISOR_KILL_GRACE_S,
                 );
-                (argv, Some(last), model)
+                (argv, Some(last))
+            }
+            Engine::Trae => {
+                let last = self.paths.advice_last_message(seq);
+                let prompt = advise::build_consult_prompt(&consult);
+                let last_text = last.to_string_lossy();
+                let argv = worker::build_supervisor_command_trae(
+                    resolved_model.as_deref(),
+                    &system_prompt,
+                    &prompt,
+                    &last_text,
+                    SUPERVISOR_SHELL_TIMEOUT_S,
+                    SUPERVISOR_KILL_GRACE_S,
+                );
+                (argv, Some(last))
             }
         };
         let audit = job::DeciderRun {
@@ -991,45 +1036,11 @@ pub fn project_situation(next: &AgentLoopState) -> String {
 /// Whether `name` resolves to an executable file on `PATH` — the supervisor's cheap
 /// pre-flight (see [`JobScheduler::supervisor_binary_present`]).
 ///
-/// Hand-rolled rather than shelling out to `which`/`command -v`: this runs inside the
-/// daemon's 500ms sweep thread, and spawning a subprocess to ask whether we can spawn a
-/// subprocess is the wrong trade. An absolute/relative `name` is probed as-is (mirroring
-/// how a shell resolves anything containing a separator).
-///
-/// Returns TRUE when `PATH` itself is unavailable: "I could not tell" must behave exactly
-/// as before this probe existed, never as "switch the feature off".
+/// FAIL-OPEN, and now says so: `or_unknown` reads an unreadable `PATH` as "present", so the
+/// behaviour is exactly what it was before this probe existed (spawn, and let the exit code
+/// speak) rather than switching a working supervisor off. The search itself lives in
+/// [`crate::which`], because the tmux driver asked the same question and answered this case
+/// the other way — one process, two answers.
 pub(super) fn binary_on_path(name: &str) -> bool {
-    if name.contains(std::path::MAIN_SEPARATOR) {
-        return is_executable_file(Path::new(name));
-    }
-    let Some(path) = std::env::var_os("PATH") else {
-        return true;
-    };
-    std::env::split_paths(&path).any(|dir| is_executable_file(&dir.join(name)))
-}
-
-/// Whether `p` is a file the current process could execute. The executable BIT is checked
-/// on unix, because a same-named directory or a non-executable data file on `PATH` would
-/// otherwise read as "the supervisor is installed".
-pub(super) fn is_executable_file(p: &Path) -> bool {
-    let Ok(md) = std::fs::metadata(p) else {
-        return false;
-    };
-    if !md.is_file() {
-        return false;
-    }
-    executable_bit(&md)
-}
-
-/// The execute-permission half of [`is_executable_file`], split out so the `cfg` covers one
-/// expression instead of a function body with two tails.
-#[cfg(unix)]
-fn executable_bit(md: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    md.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn executable_bit(_md: &std::fs::Metadata) -> bool {
-    true
+    crate::which::on_env_path(name).or_unknown()
 }

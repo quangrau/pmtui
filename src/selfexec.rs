@@ -11,6 +11,7 @@
 //! instead. Watching is what makes the guarantee hold for EVERY `pmd`, including ones this
 //! dashboard never started.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Which file an executable path currently resolves to: `(device, inode)`.
@@ -34,8 +35,45 @@ pub fn identity(exe: &Path) -> Option<(u64, u64)> {
 /// An empty path fails every `stat` and every `exec`, which is exactly the honest outcome: a process
 /// that cannot name itself cannot replace itself, and it reports that rather than guessing at a name
 /// on `PATH` that might belong to someone else's build.
+fn unsandboxed_exec_path(path: &Path) -> Option<PathBuf> {
+    let mut after_marker = false;
+    let mut real = PathBuf::from("/");
+    for component in path.components() {
+        if after_marker {
+            real.push(component.as_os_str());
+        } else if component.as_os_str() == ".sandbox_exec" {
+            after_marker = true;
+        }
+    }
+    if after_marker && identity(&real).is_some() {
+        Some(real)
+    } else {
+        None
+    }
+}
+
+fn watchable_exe(path: PathBuf) -> Option<PathBuf> {
+    if let Some(real) = unsandboxed_exec_path(&path) {
+        return Some(real);
+    }
+    (path.is_absolute() && identity(&path).is_some()).then_some(path)
+}
+
+fn executable_to_watch(argv0: Option<&OsStr>, kernel_exe: PathBuf) -> PathBuf {
+    argv0
+        .map(PathBuf::from)
+        .and_then(watchable_exe)
+        .or_else(|| watchable_exe(kernel_exe.clone()))
+        .unwrap_or(kernel_exe)
+}
+
 pub fn current_exe() -> PathBuf {
-    std::env::current_exe().unwrap_or_default()
+    // Sandboxed runners can execute a copied image while argv[0] still names the installed binary.
+    // Updates replace the launch path, so prefer it when it is absolute and statable.
+    executable_to_watch(
+        std::env::args_os().next().as_deref(),
+        std::env::current_exe().unwrap_or_default(),
+    )
 }
 
 /// Whether `exe` is now a different file than `baseline` recorded.

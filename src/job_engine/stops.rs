@@ -246,10 +246,12 @@ impl JobScheduler {
             Ok(capture) => capture,
             Err(_) => return Ok(JobTick::Escalated(stop_ids.to_vec())),
         };
-        let Some(current) = tmux::classify_dialog(&capture).filter(|dialog| {
-            dialog.identity_fingerprint() == snapshot.fingerprint
-                && dashboard_answerable_dialog(dialog)
-        }) else {
+        let Some(current) =
+            tmux::classify_dialog_for_engine(&capture, self.engine).filter(|dialog| {
+                dialog.identity_fingerprint() == snapshot.fingerprint
+                    && dashboard_answerable_dialog(dialog)
+            })
+        else {
             return self.clear_dialog_stop(
                 now,
                 ledger,
@@ -327,15 +329,16 @@ impl JobScheduler {
             Ok(capture) => capture,
             Err(_) => return Ok(JobTick::Escalated(stop_ids.to_vec())),
         };
-        let same_dialog = tmux::classify_dialog(&capture).is_some_and(|dialog| {
-            stop.pane_dialog.as_ref().map_or_else(
-                || {
-                    dialog.question == stop.question.as_deref().unwrap_or_default()
-                        && dialog.options == stop.options
-                },
-                |snapshot| dialog.identity_fingerprint() == snapshot.fingerprint,
-            )
-        });
+        let same_dialog =
+            tmux::classify_dialog_for_engine(&capture, self.engine).is_some_and(|dialog| {
+                stop.pane_dialog.as_ref().map_or_else(
+                    || {
+                        dialog.question == stop.question.as_deref().unwrap_or_default()
+                            && dialog.options == stop.options
+                    },
+                    |snapshot| dialog.identity_fingerprint() == snapshot.fingerprint,
+                )
+            });
         if same_dialog {
             return Ok(JobTick::Escalated(stop_ids.to_vec()));
         }
@@ -398,8 +401,16 @@ impl JobScheduler {
                     return Ok(tick);
                 }
                 let session = self.loop_session();
-                match driver.capture_tail(&session, 40) {
-                    Ok(capture) if tmux::classify_pane(&capture) == PaneActivity::Idle => {
+                let activity = if self.engine == crate::registry::Engine::Trae {
+                    driver
+                        .capture_tail(&session, 40)
+                        .map(|capture| tmux::classify_pane_for_engine(&capture, self.engine))
+                        .unwrap_or(PaneActivity::Busy)
+                } else {
+                    tmux::styled_activity(driver, &session, 40)
+                };
+                match activity {
+                    PaneActivity::Idle => {
                         // The resume path: a human answer just landed (it rides in
                         // `pending_context`), so flag it for the "Since last wake" block. Not a
                         // marker-less-finish correction — the answer is the thing to deliver here.

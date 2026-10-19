@@ -214,6 +214,14 @@ fn keybar_hides_chips_that_do_not_apply() {
         assert!(text.contains(shown), "{shown} chip missing: {text}");
     }
 
+    let mut trae = agent_loop_view("trae-row");
+    trae.engine = Some(Engine::Trae);
+    let text = line_text(&keybar_line(&app_with(vec![trae], UiMode::Normal), 220));
+    assert!(
+        text.contains("Fork"),
+        "TraeX supports native conversation forks: {text}"
+    );
+
     // An AUTOPILOT row: `Goal` applies (it is the direction pmd steers by). Still no
     // `Answer` without an open stop.
     let text = line_text(&keybar_line(
@@ -243,6 +251,31 @@ fn keybar_hides_chips_that_do_not_apply() {
     for shown in ["Help", "Quit"] {
         assert!(text.contains(shown), "{shown} chip missing: {text}");
     }
+}
+
+#[test]
+fn claude_and_codex_keep_the_fork_chip_when_the_handler_will_explain_refusal() {
+    for engine in [Engine::Claude, Engine::Codex] {
+        let mut row = agent_loop_view("bot");
+        row.engine = Some(engine);
+        row.session_live = true;
+        row.agent_working = Some(true);
+        let text = line_text(&keybar_line(&app_with(vec![row], UiMode::Normal), 240));
+        assert!(
+            text.contains("Fork"),
+            "{engine:?}: hidden fork chip prevents the refusal reason from being shown: {text}"
+        );
+    }
+
+    let mut trae = agent_loop_view("trae");
+    trae.engine = Some(Engine::Trae);
+    trae.session_live = true;
+    trae.agent_working = Some(true);
+    let text = line_text(&keybar_line(&app_with(vec![trae], UiMode::Normal), 240));
+    assert!(
+        !text.contains("Fork"),
+        "TraeX-specific fork gating may hide the chip: {text}"
+    );
 }
 
 #[test]
