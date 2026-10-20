@@ -796,99 +796,77 @@ pub(crate) fn handle_create_key(app: &mut App, code: KeyCode, mods: KeyModifiers
         }
         _ => {}
     }
-    let UiMode::Creating(form) = &mut app.mode else {
-        return;
-    };
-    let engine_before = form.engine;
-    let decider_engine_before = form.decider_engine;
-    match code {
-        // TAB IS ALWAYS THE NEXT FIELD. It is the form's ONE unconditional exit, so no row can trap
-        // the human — and the Directory row, which has a list and a ghost competing for keys, is
-        // exactly the row that would. Taking something lives on keys that mean taking: `Enter` for
-        // a picked candidate, `→` for the ghost.
-        KeyCode::Tab => form.next_field(),
-        KeyCode::BackTab => form.prev_field(),
-        // `↑`/`↓` move the PICK while the Directory row is showing candidates, and move between
-        // fields everywhere else — `move_dir_pick` reports which it did. Overloading these two is
-        // safe only because `Tab`/`Shift+Tab` are not overloaded; the row's keybar says so.
-        KeyCode::Down => {
-            if !form.move_dir_pick(true) {
-                form.next_field();
+    app.load_focused_create_model_choices();
+    {
+        let UiMode::Creating(form) = &mut app.mode else {
+            return;
+        };
+        match code {
+            // TAB IS ALWAYS THE NEXT FIELD. It is the form's ONE unconditional exit, so no row can trap
+            // the human — and the Directory row, which has a list and a ghost competing for keys, is
+            // exactly the row that would. Taking something lives on keys that mean taking: `Enter` for
+            // a picked candidate, `→` for the ghost.
+            KeyCode::Tab => form.next_field(),
+            KeyCode::BackTab => form.prev_field(),
+            // `↑`/`↓` move the PICK while the Directory row is showing candidates, and move between
+            // fields everywhere else — `move_dir_pick` reports which it did. Overloading these two is
+            // safe only because `Tab`/`Shift+Tab` are not overloaded; the row's keybar says so.
+            KeyCode::Down => {
+                if !form.move_dir_pick(true) {
+                    form.next_field();
+                }
             }
-        }
-        KeyCode::Up => {
-            if !form.move_dir_pick(false) {
-                form.prev_field();
+            KeyCode::Up => {
+                if !form.move_dir_pick(false) {
+                    form.prev_field();
+                }
             }
-        }
-        // On a TEXT field (Directory/Goal) ←/→ move the caret; on every toggle field
-        // (Engine/Model/Autonomy/Cadence/Decider/Decider Model) they step the value — the two Model
-        // fields are now uniform ←→ steppers over `[(default)] ++ choices`, not comboboxes.
-        KeyCode::Left => {
-            if form.is_text_field() {
-                form.caret_left();
-            } else {
-                form.adjust(false);
+            // On a TEXT field (Directory/Goal) ←/→ move the caret; on every toggle field
+            // (Engine/Model/Autonomy/Cadence/Decider/Decider Model) they step the value — the two Model
+            // fields are now uniform ←→ steppers over `[(default)] ++ choices`, not comboboxes.
+            KeyCode::Left => {
+                if form.is_text_field() {
+                    form.caret_left();
+                } else {
+                    form.adjust(false);
+                }
             }
-        }
-        // `→` at the end of the line accepts the ghost too, the way fish does it. It cannot
-        // conflict: with the caret already at the end there is no rightward move to lose.
-        KeyCode::Right if form.dir_ghost().is_some() => {
-            form.accept_dir_ghost();
-        }
-        KeyCode::Right => {
-            if form.is_text_field() {
-                form.caret_right();
-            } else {
-                form.adjust(true);
+            // `→` at the end of the line accepts the ghost too, the way fish does it. It cannot
+            // conflict: with the caret already at the end there is no rightward move to lose.
+            KeyCode::Right if form.dir_ghost().is_some() => {
+                form.accept_dir_ghost();
             }
-        }
-        // Home/End/Delete edit the focused text field; no-ops on the toggles.
-        KeyCode::Home => form.caret_home(),
-        KeyCode::End => form.caret_end(),
-        KeyCode::Delete => form.delete_forward(),
-        KeyCode::Backspace => form.backspace(),
-        // ONE source of truth for text-vs-toggle: `is_text_field` (the same predicate ←/→ use
-        // above), so a field added or reordered can't make typing and caret motion disagree. A
-        // text field takes the character; a toggle field cycles on space and ignores the rest.
-        KeyCode::Char(c) => {
-            if form.is_text_field() {
-                form.type_char(c);
-            } else if c == ' ' {
-                form.adjust(true);
+            KeyCode::Right => {
+                if form.is_text_field() {
+                    form.caret_right();
+                } else {
+                    form.adjust(true);
+                }
             }
+            // Home/End/Delete edit the focused text field; no-ops on the toggles.
+            KeyCode::Home => form.caret_home(),
+            KeyCode::End => form.caret_end(),
+            KeyCode::Delete => form.delete_forward(),
+            KeyCode::Backspace => form.backspace(),
+            // ONE source of truth for text-vs-toggle: `is_text_field` (the same predicate ←/→ use
+            // above), so a field added or reordered can't make typing and caret motion disagree. A
+            // text field takes the character; a toggle field cycles on space and ignores the rest.
+            KeyCode::Char(c) => {
+                if form.is_text_field() {
+                    form.type_char(c);
+                } else if c == ' ' {
+                    form.adjust(true);
+                }
+            }
+            _ => {}
         }
-        _ => {}
+        // ONE recompute per key, after the key has been applied — not at each mutation site, because
+        // typing, backspace, delete and a paste all reach the same buffer. `refresh_dir_suggestion`
+        // returns immediately when the text did not change, so a caret move or a keystroke in another
+        // field costs nothing and the renderer never has to read a directory.
+        form.refresh_dir_completion();
     }
-    // ONE recompute per key, after the key has been applied — not at each mutation site, because
-    // typing, backspace, delete and a paste all reach the same buffer. `refresh_dir_suggestion`
-    // returns immediately when the text did not change, so a caret move or a keystroke in another
-    // field costs nothing and the renderer never has to read a directory.
-    form.refresh_dir_completion();
-    // The Engine toggle changes which models exist, so refresh the create form's cached
-    // `model_choices` from the catalog whenever the engine just flipped — `models_for` needs
-    // `&mut App` (it does the one-per-engine discovery), so it happens here, not on the form.
-    // Only on an actual engine change, so ordinary keys stay allocation-free.
-    let (engine_after, decider_engine_after) = match &app.mode {
-        UiMode::Creating(form) => (form.engine, form.decider_engine),
-        _ => return,
-    };
-    if engine_after != engine_before {
-        let choices = app.models_for(engine_after).to_vec();
-        if let UiMode::Creating(form) = &mut app.mode {
-            form.model_choices = choices;
-        }
-    }
-    // The Decider engine toggle (autopilot-only) likewise changes which decider models exist, so
-    // refresh `decider_model_choices` from the catalog whenever the decider engine just flipped —
-    // same reasoning as the worker engine above (`toggle_decider_engine` already cleared the picked
-    // model), only on an actual change so ordinary keys stay allocation-free.
-    if decider_engine_after != decider_engine_before {
-        let choices = app.models_for(decider_engine_after).to_vec();
-        if let UiMode::Creating(form) = &mut app.mode {
-            form.decider_model_choices = choices;
-        }
-    }
+    app.load_focused_create_model_choices();
 }
 
 /// A bracketed paste: one event carrying the whole block, delivered to whichever text

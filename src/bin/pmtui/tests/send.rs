@@ -286,6 +286,31 @@ fn s_refuses_a_trae_dialog_before_checking_for_a_prompt() {
 }
 
 #[test]
+fn s_accepts_current_trae_placeholder_composers() {
+    for placeholder in [
+        "Summarize recent commits",
+        "Improve documentation in @filename",
+    ] {
+        let pane = format!("────\n❯ {placeholder}\n────\n");
+        let mut target = send_target(true);
+        target.engine = Some(Engine::Trae);
+
+        assert_eq!(
+            send_decision(
+                &target,
+                &SendProbe {
+                    alive: Some(true),
+                    capture: Some(pane),
+                    ..Default::default()
+                }
+            ),
+            SendPlan::Send("sent \u{2192} bot".into()),
+            "{placeholder}"
+        );
+    }
+}
+
+#[test]
 fn s_refuses_a_pane_with_no_prompt_on_screen() {
     let dir = tempfile::tempdir().unwrap();
     let (mut app, pane, _, _) = send_app(dir.path(), "$ some shell output\n");

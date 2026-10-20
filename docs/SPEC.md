@@ -407,6 +407,8 @@ terminal.
 - Resume and restart MUST NOT send it again. A record of the launch alone MUST NEVER allow this.
 - If the terminal cannot accept the message, the form stays open and says how much text to remove. The
   product MUST NOT make a session that cannot start.
+- Changing the Engine row MUST NOT run provider model discovery. A create-form model catalog MAY be
+  discovered and cached only when its Model row has focus.
 
 The Autopilot create form has no message field. Its goal and its first nudge give the first instruction.
 
@@ -634,7 +636,9 @@ uses its notify hook. TRAE CLI uses `hooks.Stop` with `pmtui hook turn-complete`
 environment, so the trusted hook command is stable across sessions. They MUST run the `PMTUI_BIN` supplied
 by the managed environment and MUST NOT fall back to a `pmtui` found on PATH. `PM_TURN_HOOK=off`, `0`, or
 `false` disables hook injection for each engine. The product MUST NOT bypass hook trust. If the engine asks
-a person to review the hook, the prompt stays in the terminal for that person.
+a person to review the hook, the prompt stays in the terminal for that person. A Standard TraeX first launch
+that is running MAY still be waiting at that prompt; the dashboard status MUST name hook trust and point the
+person at Enter.
 
 Project-local skills MUST be written once under `.agents/skills/`, which Codex and TraeX discover. Claude
 MAY also receive exact per-skill compatibility symlinks under `.claude/skills/`. The product MUST NOT

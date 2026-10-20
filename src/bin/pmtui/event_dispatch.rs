@@ -128,13 +128,22 @@ pub(crate) fn handle_event(app: &mut App, ev: Event, handled_key: &mut bool) -> 
                     .iter()
                     .find(|(area, _)| rect_contains(*area, m.column, m.row))
                     .map(|(_, field)| *field);
-                if let Some(field) = create_field
-                    && let UiMode::Creating(form) = &mut app.mode
-                    && form.shows_field(field)
-                {
-                    form.field = field;
-                    *handled_key = true;
-                    return false;
+                if let Some(field) = create_field {
+                    let focused = if let UiMode::Creating(form) = &mut app.mode {
+                        if form.shows_field(field) {
+                            form.field = field;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if focused {
+                        app.load_focused_create_model_choices();
+                        *handled_key = true;
+                        return false;
+                    }
                 }
                 let switch_result = app
                     .switch_hits

@@ -358,8 +358,10 @@ fn is_trae_placeholder(text: &str) -> bool {
         "Explain this codebase"
             | "Ask TRAE CLI to do anything"
             | "Use /skills to list available skills"
+            | "Summarize recent commits"
             | "Run /review on my current changes"
             | "Write tests for @filename"
+            | "Improve documentation in @filename"
             | "Find and fix a bug in @filename"
             | "Implement {feature}"
     )

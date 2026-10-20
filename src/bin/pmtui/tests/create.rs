@@ -24,6 +24,40 @@ fn create_entrypoints_are_inert_outside_their_modes() {
 }
 
 #[test]
+fn create_form_loads_model_catalogs_only_when_a_model_row_is_focused() {
+    let mut app = app_with(vec![], UiMode::Normal);
+    let claude = vec![ModelInfo {
+        label: "Opus".into(),
+        value: "opus".into(),
+    }];
+    app.model_catalog.insert(Engine::Claude, claude.clone());
+
+    app.begin_create();
+
+    let UiMode::Creating(form) = &app.mode else {
+        panic!("begin_create did not open the create form");
+    };
+    assert_eq!(form.field, CreateForm::GOAL);
+    assert!(
+        form.model_choices.is_empty(),
+        "opening the form must not copy a provider catalog before the row needs it"
+    );
+    assert!(
+        form.decider_model_choices.is_empty(),
+        "the hidden Standard decider catalog must not load at form open"
+    );
+
+    handle_create_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    handle_create_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+
+    let UiMode::Creating(form) = &app.mode else {
+        panic!("create form closed while tabbing");
+    };
+    assert_eq!(form.field, CreateForm::WORKER_MODEL);
+    assert_eq!(form.model_choices, claude);
+}
+
+#[test]
 fn submit_create_seeds_agent_loop_at_selected_tier() {
     // The Autonomy dial IS the tier: whatever level the form carries at submit is
     // exactly what gets seeded into the per-session config. Every level seeds the
@@ -240,6 +274,34 @@ fn standard_initial_message_is_sent_once_through_the_interactive_engine() {
             "Message must use the normal interactive engine: {argv:?}"
         );
     }
+}
+
+#[test]
+fn standard_trae_create_status_points_at_hook_trust_when_it_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let reg_path = dir.path().join("registry.json");
+    let project = std::fs::canonicalize({
+        let path = dir.path().join("project");
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    })
+    .unwrap();
+    let mut app = creating_loop_app(
+        &reg_path,
+        &project,
+        Engine::Trae,
+        Tier::Standard,
+        "inspect the release",
+        job_engine::DEFAULT_CADENCE_S,
+    );
+
+    app.submit_create();
+
+    assert!(
+        app.status.contains("hook trust"),
+        "TraeX first launch can wait on hook approval, so the create status must name it: {}",
+        app.status
+    );
 }
 
 #[test]
@@ -596,6 +658,7 @@ fn standard_start_status_tracks_retry_eligibility_by_launch_truth() {
     let running = app.standard_start_status(
         "bot",
         "created bot",
+        Engine::Claude,
         Some("new".into()),
         StandardStart::Running,
     );
@@ -607,6 +670,7 @@ fn standard_start_status_tracks_retry_eligibility_by_launch_truth() {
     let warning = app.standard_start_status(
         "bot",
         "created bot",
+        Engine::Claude,
         Some("new".into()),
         StandardStart::RunningWithWarning("conversation id unrecorded".into()),
     );
@@ -616,6 +680,7 @@ fn standard_start_status_tracks_retry_eligibility_by_launch_truth() {
     let failed = app.standard_start_status(
         "bot",
         "created bot",
+        Engine::Claude,
         Some("retry me".into()),
         StandardStart::NotStarted("tmux unavailable".into()),
     );

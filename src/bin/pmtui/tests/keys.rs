@@ -393,6 +393,16 @@ fn create_key_routing_covers_text_toggles_submit_cancel_and_wrong_mode() {
         unreachable!();
     };
     assert_eq!(form.engine, Engine::Codex);
+    assert!(
+        form.model_choices.is_empty(),
+        "engine changes must not synchronously load provider models"
+    );
+
+    handle_create_key(&mut engine, KeyCode::Tab, KeyModifiers::NONE);
+    let UiMode::Creating(form) = &engine.mode else {
+        unreachable!();
+    };
+    assert_eq!(form.field, CreateForm::WORKER_MODEL);
     assert_eq!(form.model_choices.len(), 1);
 
     engine.model_catalog.insert(
@@ -412,6 +422,16 @@ fn create_key_routing_covers_text_toggles_submit_cancel_and_wrong_mode() {
         unreachable!();
     };
     assert_eq!(form.decider_engine, Engine::Codex);
+    assert!(
+        form.decider_model_choices.is_empty(),
+        "decider engine changes must not synchronously load provider models"
+    );
+
+    handle_create_key(&mut engine, KeyCode::Tab, KeyModifiers::NONE);
+    let UiMode::Creating(form) = &engine.mode else {
+        unreachable!();
+    };
+    assert_eq!(form.field, CreateForm::DECIDER_MODEL);
     assert_eq!(form.decider_model_choices.len(), 1);
 }
 

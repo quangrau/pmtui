@@ -28,6 +28,8 @@ fn trae_observed_placeholders_in_the_input_box_are_idle() {
         "Explain this codebase",
         "Ask TRAE CLI to do anything",
         "Use /skills to list available skills",
+        "Summarize recent commits",
+        "Improve documentation in @filename",
     ] {
         let pane = format!("Finished response\n{}  ? for shortcuts\n", input_box(hint));
         assert!(has_composer_for_engine(&pane, Engine::Trae), "{hint}");

@@ -553,7 +553,9 @@ points you at `m`.) TRAE uses a read-only, bounded `traex exec` run. A saved mod
 
 Two ways. In the **create form**, the **Worker Model** field is a ←→ stepper over
 `(default)` plus the engine's discovered models, with the catalog shown inline under the
-field and the current value marked `●`. For an existing session, select its row and press
+field and the current value marked `●`. The form loads that catalog only when the Model
+row has focus, so changing the Engine row does not wait on a provider CLI. For an existing
+session, select its row and press
 **`w`** to open the same picker. The worker model is baked into the agent's launch command,
 so a change is saved to the registry and the dashboard asks you to press **`r`** to restart
 the agent to apply it — it does not hot-swap a running REPL. `(default)` clears it. The
@@ -570,7 +572,8 @@ when it has an explicit `availableModels` allowlist, resolving entries through
 Bedrock, Vertex, Foundry, Mantle, Anthropic AWS and custom-base-URL setups need an explicit
 allowlist, because a bare alias may not select the provider model you meant. **Codex** models
 come from `codex debug models`. **TRAE CLI** models come from `traex models --json`.
-The list is cached per engine for the dashboard's lifetime — restart `pmtui` to refresh it.
+Create-form model rows discover on first focus; existing-session model pickers discover when
+opened. The list is cached per engine for the dashboard's lifetime — restart `pmtui` to refresh it.
 </details>
 
 <details>

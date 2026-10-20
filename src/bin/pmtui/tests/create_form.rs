@@ -582,7 +582,7 @@ fn worker_model_steps_with_left_right() {
 #[test]
 fn toggling_the_engine_resets_the_worker_model() {
     // The model list is per-engine, so a model picked for one engine may not exist for the other.
-    // `toggle_engine` clears the choice back to the engine default; the App repopulates the list.
+    // `toggle_engine` clears the choice and stale list back to the engine default.
     let mut f = CreateForm::new();
     f.model_choices = vec![ModelInfo {
         label: "Opus".into(),
@@ -699,7 +699,7 @@ fn decider_model_steps_with_left_right() {
     );
 
     // A decider-engine flip clears the picked model (the list is per-decider-engine; the App
-    // repopulates `decider_model_choices` after the flip).
+    // clears `decider_model_choices` after the flip).
     f.toggle_decider_engine();
     assert_eq!(
         f.decider_model, None,

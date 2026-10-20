@@ -24,9 +24,9 @@ pub(crate) struct CreateForm {
     /// onto the new `ProjectEntry.worker_model`. The list is per-engine, so [`CreateForm::toggle_engine`]
     /// clears this back to `None`.
     pub(crate) worker_model: Option<String>,
-    /// The models the current [`CreateForm::engine`] offers — filled by the App (`models_for`) when
-    /// the form opens and on every engine toggle, so the render and the Worker Model toggle read the
-    /// catalog with no render-time discovery I/O. The `(default)` row is implicit (cursor 0).
+    /// The models the current [`CreateForm::engine`] offers — filled by the App (`models_for`) only
+    /// when the Worker Model row has focus, so engine changes never block on provider discovery. The
+    /// `(default)` row is implicit (cursor 0).
     pub(crate) model_choices: Vec<ModelInfo>,
     pub(crate) dir: Field,
     /// What [`CreateForm::dir`] could become — the ghost tail and the candidate list — and the text
@@ -69,9 +69,8 @@ pub(crate) struct CreateForm {
     /// per-decider-engine, so [`CreateForm::toggle_decider_engine`] clears this back to `None`.
     pub(crate) decider_model: Option<String>,
     /// The models the current [`CreateForm::decider_engine`] offers — filled by the App
-    /// (`models_for`) when the form opens and on every decider-engine toggle, so the render and the
-    /// Decider Model toggle read the catalog with no render-time discovery I/O. The `(default)` row
-    /// is implicit (cursor 0).
+    /// (`models_for`) only when the Decider Model row has focus, so the Decider engine toggle never
+    /// blocks on provider discovery. The `(default)` row is implicit (cursor 0).
     pub(crate) decider_model_choices: Vec<ModelInfo>,
 }
 
@@ -208,8 +207,9 @@ impl CreateForm {
             .unwrap_or(0);
         self.engine = Engine::ALL[(current + 1) % Engine::ALL.len()];
         // The model list is PER-ENGINE, so a model picked for the old engine may not exist for the
-        // new one. Reset to the engine default; the App repopulates `model_choices` after the flip.
+        // new one. Clear the stale list too; the App reloads it only when the Model row has focus.
         self.worker_model = None;
+        self.model_choices.clear();
     }
     /// Flip the DECIDER engine (Claude ↔ Codex). A no-op off the Decider field since only it
     /// routes here, and inert on Standard where the field is not even shown.
@@ -220,9 +220,10 @@ impl CreateForm {
             .unwrap_or(0);
         self.decider_engine = Engine::ALL[(current + 1) % Engine::ALL.len()];
         // The decider model list is PER-DECIDER-ENGINE, so a model picked for the old engine may not
-        // exist for the new one. Reset to the engine default; the App repopulates
-        // `decider_model_choices` after the flip (mirrors `toggle_engine` for the worker model).
+        // exist for the new one. Clear the stale list too; the App reloads it only when the Decider
+        // Model row has focus.
         self.decider_model = None;
+        self.decider_model_choices.clear();
     }
     /// Nudge the heartbeat cadence by one minute, floored at 60s (a zero/near-zero
     /// cadence would hammer the heartbeat). A no-op off the Cadence field since only

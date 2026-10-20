@@ -39,19 +39,52 @@ impl App {
     }
 
     fn open_create_form(&mut self, mut form: CreateForm) {
-        // Fill the Worker Model catalog NOW, not at render time: the render and the Worker Model
-        // toggle read `form.model_choices` directly, and `models_for` does the one-per-engine
-        // discovery I/O (cached). The engine-toggle path in `handle_create_key` refreshes it.
-        form.model_choices = self.models_for(form.engine).to_vec();
-        // The Decider Model catalog is per-DECIDER-engine; fill it the same way, so the render and
-        // the Decider Model toggle read `form.decider_model_choices` with no render-time discovery
-        // I/O. The decider-engine-toggle path in `handle_create_key` refreshes it.
-        form.decider_model_choices = self.models_for(form.decider_engine).to_vec();
         // The Directory candidate list is discovery I/O too, so it is filled HERE for the same
         // reason: a click can focus that row without any key reaching `handle_create_key`, and the
         // renderer must never read a directory.
         form.refresh_dir_completion();
         self.mode = UiMode::Creating(form);
+    }
+
+    pub(crate) fn load_focused_create_model_choices(&mut self) {
+        enum Target {
+            Worker(Engine),
+            Decider(Engine),
+        }
+
+        let target = match &self.mode {
+            UiMode::Creating(form)
+                if form.field == CreateForm::WORKER_MODEL && form.model_choices.is_empty() =>
+            {
+                Target::Worker(form.engine)
+            }
+            UiMode::Creating(form)
+                if form.field == CreateForm::DECIDER_MODEL
+                    && form.decider_model_choices.is_empty() =>
+            {
+                Target::Decider(form.decider_engine)
+            }
+            _ => return,
+        };
+        let engine = match target {
+            Target::Worker(engine) | Target::Decider(engine) => engine,
+        };
+        let choices = self.models_for(engine).to_vec();
+        if let UiMode::Creating(form) = &mut self.mode {
+            match target {
+                Target::Worker(engine)
+                    if form.field == CreateForm::WORKER_MODEL && form.engine == engine =>
+                {
+                    form.model_choices = choices;
+                }
+                Target::Decider(engine)
+                    if form.field == CreateForm::DECIDER_MODEL && form.decider_engine == engine =>
+                {
+                    form.decider_model_choices = choices;
+                }
+                _ => {}
+            }
+        }
     }
 
     pub(crate) fn cancel_create_form(&mut self) {
@@ -367,7 +400,7 @@ impl App {
                 worker_model.as_deref(),
                 initial_prompt.as_deref(),
             );
-            self.standard_start_status(&id, &created, initial_prompt.clone(), outcome)
+            self.standard_start_status(&id, &created, form.engine, initial_prompt.clone(), outcome)
         };
         self.refresh();
         if let Some(index) = self.projects.iter().position(|view| view.id == id) {
@@ -382,17 +415,23 @@ impl App {
         &mut self,
         id: &str,
         created: &str,
+        engine: Engine,
         initial_prompt: Option<String>,
         outcome: StandardStart,
     ) -> String {
+        let trae_note = if engine == Engine::Trae {
+            "; TraeX hook trust may need Enter"
+        } else {
+            ""
+        };
         match outcome {
             StandardStart::Running => {
                 self.initial_message_retries.remove(id);
-                format!("{created}; running — you drive it (Enter)")
+                format!("{created}; running — you drive it (Enter){trae_note}")
             }
             StandardStart::RunningWithWarning(why) => {
                 self.initial_message_retries.remove(id);
-                format!("{created}; running — you drive it (Enter); {why}")
+                format!("{created}; running — you drive it (Enter){trae_note}; {why}")
             }
             StandardStart::NotStarted(why) => {
                 if let Some(prompt) = initial_prompt {
