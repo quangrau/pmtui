@@ -617,7 +617,11 @@ impl From<SpawnError> for PlanRefusal {
 }
 
 /// Validate a request against the registry and resolve its defaults from the parent row.
-pub(super) fn plan_child(reg: &Registry, request: &SpawnRequest) -> Result<ChildPlan, PlanRefusal> {
+pub(super) fn plan_child(
+    reg: &Registry,
+    request: &SpawnRequest,
+    pmtui_bin: Option<&Path>,
+) -> Result<ChildPlan, PlanRefusal> {
     let args = request.args.normalized();
     let parent = reg
         .projects
@@ -656,7 +660,14 @@ pub(super) fn plan_child(reg: &Registry, request: &SpawnRequest) -> Result<Child
     let title = child_title(&args)?;
     let name = agent_manager::registry::normalize_display_name(args.name.as_deref().unwrap_or(""))
         .map_err(|error| refusal(ErrorCode::InvalidArgument, format!("name: {error}")))?;
-    let bytes = fresh_launch_bytes(reg, &dir, engine, model.as_deref(), &args.message);
+    let bytes = fresh_launch_bytes(
+        reg,
+        &dir,
+        engine,
+        model.as_deref(),
+        &args.message,
+        pmtui_bin,
+    );
     if bytes > tmux::LAUNCH_COMMAND_MAX_BYTES {
         return Err(refusal(
             ErrorCode::MessageTooLong,

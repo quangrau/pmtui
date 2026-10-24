@@ -94,6 +94,14 @@ pub struct MarkerRevision {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DeciderHealthSelection {
+    pub engine: Engine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentLoopState {
     pub created_at: Epoch,
     /// The pinned (claude) or captured (codex) conversation id resumed each wake.
@@ -115,6 +123,8 @@ pub struct AgentLoopState {
     /// default that always resumes.
     #[serde(default)]
     pub resume_unconfirmed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id_revision: Option<MarkerRevision>,
     pub engine: Engine,
     /// Per-session heartbeat cadence in seconds; `None` ⇒ the harness default.
     #[serde(default)]
@@ -258,6 +268,8 @@ pub struct AgentLoopState {
     pub decider_latched: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decider_latch_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decider_health_selection: Option<DeciderHealthSelection>,
     /// Bounded, structured audit history for read-only decider consults. Operational behavior never
     /// depends on it: pmd writes it alongside the existing lifecycle state and pmtui only reads it.
     #[serde(
@@ -521,6 +533,7 @@ impl AgentLoopState {
             created_at: now,
             conversation_id: None,
             resume_unconfirmed: false,
+            conversation_id_revision: None,
             engine,
             cadence_s,
             cadence_pinned: false,
@@ -544,6 +557,7 @@ impl AgentLoopState {
             advice_inflight: None,
             decider_latched: false,
             decider_latch_reason: None,
+            decider_health_selection: None,
             decider_runs: Vec::new(),
             turn_seq: 0,
             turn_trace: Vec::new(),

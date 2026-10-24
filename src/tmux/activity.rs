@@ -202,11 +202,7 @@ pub fn has_composer_for_engine(capture: &str, engine: impl Into<Option<Engine>>)
     has_composer_in_tail_for_engine(capture, PANE_TAIL_LINES, engine)
 }
 
-pub fn has_composer_in_tail_for_engine(
-    capture: &str,
-    tail_lines: usize,
-    engine: Engine,
-) -> bool {
+pub fn has_composer_in_tail_for_engine(capture: &str, tail_lines: usize, engine: Engine) -> bool {
     let non_empty: Vec<&str> = capture.lines().filter(|l| !l.trim().is_empty()).collect();
     if non_empty.is_empty() {
         return false;
@@ -386,11 +382,6 @@ fn is_empty_prompt_row(lines: &[&str], at: usize) -> bool {
 pub(super) fn is_prompt_row(lines: &[&str], at: usize) -> bool {
     let line = lines[at];
     is_bare_prompt(line) || is_codex_composer(line) || claude_box(lines, at).is_some()
-}
-
-/// The index of the last prompt row in `lines`, if any.
-fn last_prompt_row(lines: &[&str]) -> Option<usize> {
-    (0..lines.len()).rev().find(|&at| is_prompt_row(lines, at))
 }
 
 /// Claude's prompt INSIDE ITS INPUT BOX: when the row at `at` is one, the index of the

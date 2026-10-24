@@ -326,6 +326,7 @@ fn target_of(entry: &agent_manager::registry::ProjectEntry) -> SendTarget {
         .map(|config| config.autonomy);
     SendTarget {
         id: entry.id.clone(),
+        engine: entry.engine,
         root: entry.root.clone(),
         session: tmux::session_name(&entry.id, &entry.root),
         agent_loop: entry.mode == Mode::AgentLoop,

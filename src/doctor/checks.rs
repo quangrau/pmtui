@@ -318,6 +318,7 @@ fn inspect_project_files(
         index,
         label,
         &MESSAGE_SKILL,
+        MESSAGE_SKILL.body,
         &paths.root.join(crate::skills::MESSAGE_SKILL_REL_PATH),
         checks,
     );

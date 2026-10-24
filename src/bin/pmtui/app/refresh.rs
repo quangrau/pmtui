@@ -258,14 +258,12 @@ impl App {
                                 hook_working,
                                 ActivityObservation::Unreadable,
                             ),
-                            Ok((tmux::PaneActivity::Busy, _)) => {
-                                merge_activity(
-                                    pmd_driven,
-                                    v.engine,
-                                    hook_working,
-                                    ActivityObservation::Busy,
-                                )
-                            }
+                            Ok((tmux::PaneActivity::Busy, _)) => merge_activity(
+                                pmd_driven,
+                                v.engine,
+                                hook_working,
+                                ActivityObservation::Busy,
+                            ),
                             Ok((tmux::PaneActivity::Idle, cap)) => {
                                 let (fp, count) = idle_gate_step(
                                     prev_gate.get(&p.id).copied(),

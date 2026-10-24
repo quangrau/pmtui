@@ -330,7 +330,8 @@ impl App {
         let argv = agent_manager::worker::build_fork_command(
             engine,
             &source_conversation,
-            turn_hook_runnable.then_some(&fork.paths.turn_signal()),
+            agent_manager::worker::turn_hook_runnable_for(engine, self.pmtui_bin.as_deref())
+                .then_some(&fork.paths.turn_signal()),
             (engine == Engine::Claude).then_some(identity_file.as_path()),
             source.worker_model.as_deref(),
         );

@@ -43,7 +43,12 @@ fn the_idle_gate_confirms_only_a_byte_stable_transcript() {
 fn live_activity_combines_with_the_hook_in_the_fail_safe_direction() {
     for hook in [None, Some(false), Some(true)] {
         assert_eq!(
-            merge_activity(true, Some(Engine::Claude), hook, ActivityObservation::Missing),
+            merge_activity(
+                true,
+                Some(Engine::Claude),
+                hook,
+                ActivityObservation::Missing
+            ),
             Some(false),
             "no live pane is idle regardless of stale hook state"
         );
